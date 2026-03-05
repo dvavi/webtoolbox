@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Webtoolbox - Home{% endblock %}
+
+{% block content %}
+<section class="mb-4">
+  <h1 class="h3">Available Tools</h1>
+  <p class="text-muted">Select a tool to open its workspace.</p>
+</section>
+
+<div class="row g-3">
+  {% for tool in tools %}
+  <div class="col-12 col-md-6">
+    <div class="card h-100 shadow-sm">
+      <div class="card-body">
+        <h2 class="h5 card-title">{{ tool.name }}</h2>
+        <p class="card-text">{{ tool.description }}</p>
+        <a class="btn btn-primary" href="{{ tool.url }}">Open Tool</a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
