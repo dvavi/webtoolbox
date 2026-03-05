@@ -15,23 +15,41 @@ logger = logging.getLogger(__name__)
 class TranscriptionService:
     """Handles transcription jobs using faster-whisper with a whisper fallback."""
 
-    model_size: str
+    general_model: str
+    estonian_model: str
+    cpu_threads: int
+    num_workers: int
+    beam_size: int
     progress_manager: ProgressManager
 
     def __post_init__(self) -> None:
         self._engine_name: str | None = None
-        self._model = None
+        self._models: dict[str, tuple[object, str]] = {}
 
-    async def transcribe_to_text(self, job_id: str, audio_path: Path, transcript_path: Path) -> None:
+    async def transcribe_to_text(
+        self,
+        job_id: str,
+        audio_path: Path,
+        transcript_path: Path,
+        model_profile: str,
+        language: str,
+    ) -> None:
         try:
             event_loop = asyncio.get_running_loop()
             await self.progress_manager.update(
                 job_id=job_id,
                 state=JobState.running,
-                message="Loading transcription model",
+                message=f"Loading model ({model_profile})",
                 percent=5,
             )
-            transcript_text = await asyncio.to_thread(self._run_transcription_sync, job_id, audio_path, event_loop)
+            transcript_text = await asyncio.to_thread(
+                self._run_transcription_sync,
+                job_id,
+                audio_path,
+                event_loop,
+                model_profile,
+                language,
+            )
             await self.progress_manager.update(
                 job_id=job_id,
                 state=JobState.running,
@@ -53,6 +71,8 @@ class TranscriptionService:
                     "audio_file": audio_path.name,
                     "transcript_file": transcript_path.name,
                     "engine": self._engine_name,
+                    "model_profile": model_profile,
+                    "language": language,
                 },
             )
         except Exception as exc:
@@ -67,13 +87,39 @@ class TranscriptionService:
                 error=str(exc),
             )
 
-    def _run_transcription_sync(self, job_id: str, audio_path: Path, event_loop: asyncio.AbstractEventLoop) -> str:
-        model, engine = self._get_or_create_model_sync()
+    def _run_transcription_sync(
+        self,
+        job_id: str,
+        audio_path: Path,
+        event_loop: asyncio.AbstractEventLoop,
+        model_profile: str,
+        language: str,
+    ) -> str:
+        model_name = self._resolve_model_name(model_profile)
+        model, engine = self._get_or_create_model_sync(model_name, model_profile)
         self._engine_name = engine
+        normalized_language = self._normalize_language(language)
 
         if engine == "faster-whisper":
-            return self._run_faster_whisper(model, job_id, audio_path, event_loop)
-        return self._run_openai_whisper(model, job_id, audio_path, event_loop)
+            return self._run_faster_whisper(model, job_id, audio_path, event_loop, normalized_language)
+        return self._run_openai_whisper(model, job_id, audio_path, event_loop, normalized_language)
+
+    def _resolve_model_name(self, model_profile: str) -> str:
+        if model_profile == "estonian":
+            model_name = self.estonian_model.strip()
+            if not model_name:
+                raise ValueError(
+                    "Special Estonian model is not configured. Set WEBTOOLBOX_WHISPER_ESTONIAN_MODEL first."
+                )
+            return model_name
+        return self.general_model
+
+    @staticmethod
+    def _normalize_language(language: str) -> str | None:
+        value = (language or "auto").strip().lower()
+        if value in {"", "auto"}:
+            return None
+        return value
 
     def _publish_progress_sync(
         self,
@@ -93,31 +139,67 @@ class TranscriptionService:
         )
         future.result()
 
-    def _get_or_create_model_sync(self):
-        if self._model is not None:
-            return self._model, self._engine_name
+    def _get_or_create_model_sync(self, model_name: str, model_profile: str):
+        if model_name in self._models:
+            return self._models[model_name]
 
         try:
             from faster_whisper import WhisperModel
 
-            model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
-            self._model = model
-            self._engine_name = "faster-whisper"
-            logger.info("transcription_engine_selected", extra={"engine": self._engine_name})
-            return self._model, self._engine_name
+            model = WhisperModel(
+                model_name,
+                device="cpu",
+                compute_type="int8",
+                cpu_threads=max(0, self.cpu_threads),
+                num_workers=max(1, self.num_workers),
+            )
+            self._models[model_name] = (model, "faster-whisper")
+            logger.info(
+                "transcription_engine_selected",
+                extra={
+                    "engine": "faster-whisper",
+                    "model_name": model_name,
+                    "model_profile": model_profile,
+                    "cpu_threads": max(0, self.cpu_threads),
+                    "num_workers": max(1, self.num_workers),
+                    "beam_size": max(1, self.beam_size),
+                },
+            )
+            return self._models[model_name]
         except Exception as faster_exc:
             logger.warning(
                 "faster_whisper_unavailable",
-                extra={"reason": str(faster_exc), "fallback": "openai-whisper"},
+                extra={
+                    "reason": str(faster_exc),
+                    "fallback": "openai-whisper",
+                    "model_name": model_name,
+                    "model_profile": model_profile,
+                },
             )
+
+        if model_profile != "general":
+            raise RuntimeError(
+                "Special model must be a faster-whisper compatible model (CTranslate2)."
+            )
+
+        if self.cpu_threads > 0:
+            try:
+                import torch
+
+                torch.set_num_threads(self.cpu_threads)
+                logger.info("openai_whisper_threads_configured", extra={"cpu_threads": self.cpu_threads})
+            except Exception:
+                logger.warning("openai_whisper_threads_config_failed", extra={"cpu_threads": self.cpu_threads})
 
         import whisper
 
-        model = whisper.load_model(self.model_size)
-        self._model = model
-        self._engine_name = "openai-whisper"
-        logger.info("transcription_engine_selected", extra={"engine": self._engine_name})
-        return self._model, self._engine_name
+        model = whisper.load_model(model_name)
+        self._models[model_name] = (model, "openai-whisper")
+        logger.info(
+            "transcription_engine_selected",
+            extra={"engine": "openai-whisper", "model_name": model_name, "model_profile": model_profile},
+        )
+        return self._models[model_name]
 
     def _run_faster_whisper(
         self,
@@ -125,8 +207,14 @@ class TranscriptionService:
         job_id: str,
         audio_path: Path,
         event_loop: asyncio.AbstractEventLoop,
+        language: str | None,
     ) -> str:
-        segments, info = model.transcribe(str(audio_path), beam_size=5, vad_filter=True)
+        segments, info = model.transcribe(
+            str(audio_path),
+            beam_size=max(1, self.beam_size),
+            vad_filter=True,
+            language=language,
+        )
         duration = float(getattr(info, "duration", 0.0) or 0.0)
         lines: list[str] = []
 
@@ -151,6 +239,7 @@ class TranscriptionService:
         job_id: str,
         audio_path: Path,
         event_loop: asyncio.AbstractEventLoop,
+        language: str | None,
     ) -> str:
         self._publish_progress_sync(
             event_loop=event_loop,
@@ -158,5 +247,5 @@ class TranscriptionService:
             message="Running openai-whisper transcription",
             percent=50,
         )
-        result = model.transcribe(str(audio_path))
+        result = model.transcribe(str(audio_path), language=language)
         return str(result.get("text", "")).strip()

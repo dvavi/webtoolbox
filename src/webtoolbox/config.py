@@ -28,6 +28,12 @@ class Settings:
     logs_dir: Path = Path(os.getenv("WEBTOOLBOX_LOGS_DIR", "logs"))
     max_upload_bytes: int = _get_env_int("WEBTOOLBOX_MAX_UPLOAD_BYTES", 200 * 1024 * 1024)
     model_size: str = os.getenv("WEBTOOLBOX_WHISPER_MODEL", "small")
+    estonian_model: str = os.getenv("WEBTOOLBOX_WHISPER_ESTONIAN_MODEL", "")
+    default_model_profile: str = os.getenv("WEBTOOLBOX_DEFAULT_MODEL_PROFILE", "general")
+    default_transcribe_language: str = os.getenv("WEBTOOLBOX_DEFAULT_TRANSCRIBE_LANGUAGE", "auto")
+    whisper_cpu_threads: int = _get_env_int("WEBTOOLBOX_WHISPER_CPU_THREADS", 0)
+    whisper_num_workers: int = _get_env_int("WEBTOOLBOX_WHISPER_NUM_WORKERS", 1)
+    whisper_beam_size: int = _get_env_int("WEBTOOLBOX_WHISPER_BEAM_SIZE", 1)
 
     @property
     def audio_dir(self) -> Path:

@@ -28,18 +28,48 @@ TEXT_EXTENSIONS = {"txt"}
 audio_store = AudioStore(base_dir=settings.audio_dir, allowed_extensions=AUDIO_EXTENSIONS)
 text_store = TextStore(base_dir=settings.transcript_dir, allowed_extensions=TEXT_EXTENSIONS)
 progress_manager = ProgressManager()
-transcription_service = TranscriptionService(model_size=settings.model_size, progress_manager=progress_manager)
+transcription_service = TranscriptionService(
+    general_model=settings.model_size,
+    estonian_model=settings.estonian_model,
+    cpu_threads=settings.whisper_cpu_threads,
+    num_workers=settings.whisper_num_workers,
+    beam_size=settings.whisper_beam_size,
+    progress_manager=progress_manager,
+)
+
+MODEL_PROFILES = {"general", "estonian"}
+TRANSCRIBE_LANGUAGES = {"auto", "et", "ru", "en"}
+
 
 
 def _safe_transcript_name(audio_file: str) -> str:
     return f"{Path(audio_file).stem}.txt"
 
 
-def _list_context() -> dict[str, list[str]]:
+def _list_context() -> dict[str, object]:
     return {
         "audio_files": audio_store.list_files(),
         "text_files": text_store.list_files(),
+        "selected_model_profile": settings.default_model_profile if settings.default_model_profile in MODEL_PROFILES else "general",
+        "selected_language": settings.default_transcribe_language if settings.default_transcribe_language in TRANSCRIBE_LANGUAGES else "auto",
+        "estonian_model_configured": bool(settings.estonian_model.strip()),
     }
+
+
+def _validate_transcription_options(model_profile: str, language: str) -> tuple[str, str]:
+    profile = (model_profile or "general").strip().lower()
+    lang = (language or "auto").strip().lower()
+
+    if profile not in MODEL_PROFILES:
+        raise HTTPException(status_code=400, detail="Unknown model profile")
+    if lang not in TRANSCRIBE_LANGUAGES:
+        raise HTTPException(status_code=400, detail="Unknown transcription language")
+    if profile == "estonian" and not settings.estonian_model.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Special Estonian model is not configured on server",
+        )
+    return profile, lang
 
 
 async def _save_upload_streaming(upload: UploadFile) -> str:
@@ -123,30 +153,6 @@ async def delete_file(request: Request, kind: str, filename: str = Form(...)) ->
     return await transcriber_lists_partial(request)
 
 
-@router.post("/rename/{kind}", response_class=HTMLResponse)
-async def rename_file(
-    request: Request,
-    kind: str,
-    old_name: str = Form(...),
-    new_name: str = Form(...),
-) -> HTMLResponse:
-    try:
-        if kind == "audio":
-            audio_store.rename(old_name=old_name, new_name=new_name)
-        elif kind == "text":
-            text_store.rename(old_name=old_name, new_name=new_name)
-        else:
-            raise HTTPException(status_code=400, detail="Unknown file kind")
-    except (InvalidFilenameError, FileNotFoundError, FileExistsError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    logger.info(
-        "file_rename_request",
-        extra={"kind": kind, "old_name": old_name, "new_name": new_name},
-    )
-    return await transcriber_lists_partial(request)
-
-
 @router.get("/download/{kind}/{filename}")
 async def download_file(kind: str, filename: str) -> FileResponse:
     try:
@@ -162,12 +168,18 @@ async def download_file(kind: str, filename: str) -> FileResponse:
 
 
 @router.post("/transcode")
-async def start_transcription(audio_filename: str = Form(...)) -> JSONResponse:
+async def start_transcription(
+    audio_filename: str = Form(...),
+    model_profile: str = Form(default="general"),
+    language: str = Form(default="auto"),
+) -> JSONResponse:
     try:
         audio_filename = validate_filename(audio_filename)
         audio_path = audio_store.get_path(audio_filename)
     except (InvalidFilenameError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    profile, selected_language = _validate_transcription_options(model_profile, language)
 
     transcript_name = _safe_transcript_name(audio_filename)
     transcript_path = text_store.base_dir / transcript_name
@@ -181,6 +193,8 @@ async def start_transcription(audio_filename: str = Form(...)) -> JSONResponse:
             "job_id": job_id,
             "audio_file": audio_filename,
             "transcript_file": transcript_name,
+            "model_profile": profile,
+            "language": selected_language,
         },
     )
 
@@ -189,6 +203,8 @@ async def start_transcription(audio_filename: str = Form(...)) -> JSONResponse:
             job_id=job_id,
             audio_path=audio_path,
             transcript_path=transcript_path,
+            model_profile=profile,
+            language=selected_language,
         )
     )
 
@@ -209,29 +225,16 @@ async def delete_audio_bulk(request: Request, selected_files: list[str] = Form(d
     return await transcriber_lists_partial(request)
 
 
-@router.post("/audio/rename", response_class=HTMLResponse)
-async def rename_audio_selected(
-    request: Request,
-    selected_files: list[str] = Form(default=[]),
-    new_name: str = Form(...),
-) -> HTMLResponse:
-    if len(selected_files) != 1:
-        raise HTTPException(status_code=400, detail="Select exactly one audio file to rename")
-
-    old_name = selected_files[0]
-    try:
-        audio_store.rename(old_name=old_name, new_name=new_name)
-    except (InvalidFilenameError, FileNotFoundError, FileExistsError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    logger.info("audio_selected_rename", extra={"old_name": old_name, "new_name": new_name})
-    return await transcriber_lists_partial(request)
-
-
 @router.post("/audio/transcode")
-async def transcode_audio_bulk(selected_files: list[str] = Form(default=[])) -> JSONResponse:
+async def transcode_audio_bulk(
+    selected_files: list[str] = Form(default=[]),
+    model_profile: str = Form(default="general"),
+    language: str = Form(default="auto"),
+) -> JSONResponse:
     if not selected_files:
         raise HTTPException(status_code=400, detail="Select at least one audio file")
+
+    profile, selected_language = _validate_transcription_options(model_profile, language)
 
     jobs: list[dict[str, str]] = []
     for audio_filename in selected_files:
@@ -253,6 +256,8 @@ async def transcode_audio_bulk(selected_files: list[str] = Form(default=[])) -> 
                 "job_id": job_id,
                 "audio_file": safe_name,
                 "transcript_file": transcript_name,
+                "model_profile": profile,
+                "language": selected_language,
             },
         )
 
@@ -261,12 +266,28 @@ async def transcode_audio_bulk(selected_files: list[str] = Form(default=[])) -> 
                 job_id=job_id,
                 audio_path=audio_path,
                 transcript_path=transcript_path,
+                model_profile=profile,
+                language=selected_language,
             )
         )
 
         jobs.append({"job_id": job_id, "audio_file": safe_name, "transcript_file": transcript_name})
 
     return JSONResponse({"jobs": jobs})
+
+
+@router.post("/text/delete", response_class=HTMLResponse)
+async def delete_text_bulk(request: Request, selected_files: list[str] = Form(default=[])) -> HTMLResponse:
+    deleted: list[str] = []
+    for name in selected_files:
+        try:
+            text_store.delete(name)
+            deleted.append(name)
+        except InvalidFilenameError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    logger.info("text_bulk_delete", extra={"files": deleted, "count": len(deleted)})
+    return await transcriber_lists_partial(request)
 
 
 @router.websocket("/ws/{job_id}")

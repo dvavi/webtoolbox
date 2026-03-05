@@ -175,6 +175,19 @@
     return Array.from(document.querySelectorAll("input[name='selected_files']:checked")).map((item) => item.value);
   };
 
+  const selectedText = () => {
+    return Array.from(document.querySelectorAll("input[name='selected_text_files']:checked")).map((item) => item.value);
+  };
+
+  const transcodeOptions = () => {
+    const modelSelect = document.getElementById("model-profile-select");
+    const languageSelect = document.getElementById("language-select");
+    return {
+      modelProfile: modelSelect ? modelSelect.value : "general",
+      language: languageSelect ? languageSelect.value : "auto"
+    };
+  };
+
   const refreshLists = () => {
     htmx.ajax("GET", "/tools/transcriber/partials/lists", { target: "#file-lists", swap: "innerHTML" });
   };
@@ -254,30 +267,22 @@
       return;
     }
 
-    if (target.id === "audio-rename-button") {
+    if (target.id === "text-delete-button") {
       event.preventDefault();
-      const files = selectedAudio();
-      const newNameInput = document.getElementById("rename-input");
-      const newName = newNameInput ? newNameInput.value : "";
-      if (files.length !== 1) {
-        alert("Select exactly one audio file to rename.");
-        return;
-      }
-      if (!newName) {
-        alert("Enter a new file name.");
+      const files = selectedText();
+      if (files.length === 0) {
+        alert("Select at least one transcript file.");
         return;
       }
       const formData = new FormData();
       files.forEach((file) => formData.append("selected_files", file));
-      formData.append("new_name", newName);
-      const response = await fetch("/tools/transcriber/audio/rename", { method: "POST", body: formData });
+      const response = await fetch("/tools/transcriber/text/delete", { method: "POST", body: formData });
       if (!response.ok) {
-        alert("Rename failed.");
-        appendLog(`Rename failed for ${files[0]} -> ${newName}`);
+        alert("Transcript delete failed.");
+        appendLog(`Transcript delete failed for ${files.length} file(s)`);
         return;
       }
-      newNameInput.value = "";
-      appendLog(`Renamed ${files[0]} -> ${newName}`);
+      appendLog(`Deleted ${files.length} transcript file(s)`);
       refreshLists();
       return;
     }
@@ -292,11 +297,15 @@
 
       const formData = new FormData();
       files.forEach((file) => formData.append("selected_files", file));
+      const options = transcodeOptions();
+      formData.append("model_profile", options.modelProfile);
+      formData.append("language", options.language);
       const response = await fetch("/tools/transcriber/audio/transcode", { method: "POST", body: formData });
       if (!response.ok) {
+        const errorText = await response.text();
         message.textContent = "Failed to start transcription";
         panel.classList.remove("d-none");
-        appendLog("Failed to start transcription jobs");
+        appendLog(`Failed to start transcription jobs (${options.modelProfile}, ${options.language}). ${errorText}`);
         return;
       }
 
@@ -304,8 +313,8 @@
       panel.classList.remove("d-none");
       bar.style.width = "0%";
       bar.textContent = "0%";
-      message.textContent = `Started ${payload.jobs.length} job(s)`;
-      appendLog(`Started ${payload.jobs.length} transcription job(s)`);
+      message.textContent = `Started ${payload.jobs.length} job(s) using ${options.modelProfile} model (${options.language})`;
+      appendLog(`Started ${payload.jobs.length} transcription job(s) using ${options.modelProfile} model (${options.language})`);
 
       payload.jobs.forEach(monitorJob);
       refreshLists();
@@ -318,6 +327,13 @@
       return;
     }
     if (target.id !== "select-all-audio") {
+      if (target.id !== "select-all-text") {
+        return;
+      }
+
+      document.querySelectorAll("input[name='selected_text_files']").forEach((checkbox) => {
+        checkbox.checked = target.checked;
+      });
       return;
     }
 

@@ -25,7 +25,10 @@ The transcriber tool stores files under a single data root:
 - Tool page with:
   - Existing audio and transcript file lists
   - Drag and drop upload for audio and text files
-  - Rename, delete, and download operations
+  - Audio and transcript delete operations
+  - Transcript download operations
+  - Model profile selection (`General` or `Special Estonian`)
+  - Language selection (`Auto`, `Estonian`, `Russian`, `English`)
   - Background transcription jobs
   - Live progress updates over WebSocket
 - Transcript output naming rule:
@@ -54,6 +57,62 @@ Environment variables:
 - `WEBTOOLBOX_LOGS_DIR` (default: `logs`)
 - `WEBTOOLBOX_MAX_UPLOAD_BYTES` (default: `209715200`)
 - `WEBTOOLBOX_WHISPER_MODEL` (default: `small`)
+- `WEBTOOLBOX_WHISPER_ESTONIAN_MODEL` (default: empty, required for `Special Estonian` profile)
+- `WEBTOOLBOX_DEFAULT_MODEL_PROFILE` (default: `general`)
+- `WEBTOOLBOX_DEFAULT_TRANSCRIBE_LANGUAGE` (default: `auto`)
+- `WEBTOOLBOX_WHISPER_CPU_THREADS` (default: `0`, lets runtime choose)
+- `WEBTOOLBOX_WHISPER_NUM_WORKERS` (default: `1`)
+- `WEBTOOLBOX_WHISPER_BEAM_SIZE` (default: `1`, faster than beam size 5)
+
+## Special Estonian model setup
+
+`Special Estonian` uses a `faster-whisper` compatible model (CTranslate2 format).
+You can provide either:
+
+- A Hugging Face model id (for example: `org/model-name-ct2`)
+- A local directory path where that model is stored
+
+Example install flow in container:
+
+```bash
+cd /opt/webtoolbox
+source .venv/bin/activate
+
+# Optional helper for downloading model snapshots locally
+pip install -U huggingface_hub
+
+# Example: download a model snapshot to local storage
+python - <<'PY'
+from huggingface_hub import snapshot_download
+snapshot_download(
+  repo_id="<HF_ESTONIAN_CT2_MODEL_ID>",
+  local_dir="/opt/webtoolbox/models/estonian-ct2",
+  local_dir_use_symlinks=False,
+)
+print("Model downloaded to /opt/webtoolbox/models/estonian-ct2")
+PY
+```
+
+Then configure service environment (drop-in or service file):
+
+```ini
+Environment="WEBTOOLBOX_WHISPER_MODEL=small"
+Environment="WEBTOOLBOX_WHISPER_ESTONIAN_MODEL=/opt/webtoolbox/models/estonian-ct2"
+Environment="WEBTOOLBOX_DEFAULT_MODEL_PROFILE=general"
+Environment="WEBTOOLBOX_DEFAULT_TRANSCRIBE_LANGUAGE=auto"
+```
+
+Reload and restart:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart webtoolbox
+```
+
+Notes:
+
+- If `WEBTOOLBOX_WHISPER_ESTONIAN_MODEL` is empty, `Special Estonian` is disabled in the UI.
+- `Special Estonian` profile is expected to run through `faster-whisper`.
 
 ## Setup in Proxmox LXC (Linux)
 

@@ -5,11 +5,23 @@
       <div class="card-body p-0">
         <div class="p-3 border-bottom">
           <div class="row g-2 align-items-center">
-            <div class="col-12 col-md-7">
-              <input id="rename-input" class="form-control form-control-sm" placeholder="New name for selected single file">
+            <div class="col-12 col-md-4">
+              <label for="model-profile-select" class="form-label form-label-sm small text-muted mb-1">Model</label>
+              <select id="model-profile-select" class="form-select form-select-sm">
+                <option value="general" {% if selected_model_profile == "general" %}selected{% endif %}>General</option>
+                <option value="estonian" {% if selected_model_profile == "estonian" %}selected{% endif %} {% if not estonian_model_configured %}disabled{% endif %}>Special Estonian{% if not estonian_model_configured %} (not configured){% endif %}</option>
+              </select>
             </div>
-            <div class="col-12 col-md-5 d-grid gap-2 d-md-flex justify-content-md-end">
-              <button id="audio-rename-button" class="btn btn-sm btn-outline-primary">Rename</button>
+            <div class="col-12 col-md-3">
+              <label for="language-select" class="form-label form-label-sm small text-muted mb-1">Language</label>
+              <select id="language-select" class="form-select form-select-sm">
+                <option value="auto" {% if selected_language == "auto" %}selected{% endif %}>Auto</option>
+                <option value="et" {% if selected_language == "et" %}selected{% endif %}>Estonian</option>
+                <option value="ru" {% if selected_language == "ru" %}selected{% endif %}>Russian</option>
+                <option value="en" {% if selected_language == "en" %}selected{% endif %}>English</option>
+              </select>
+            </div>
+            <div class="col-12 col-md-5 d-grid gap-2 d-md-flex justify-content-md-end align-self-end">
               <button id="audio-delete-button" class="btn btn-sm btn-outline-danger">Delete</button>
               <button id="audio-transcribe-button" class="btn btn-sm btn-success">Transcribe</button>
             </div>
@@ -45,10 +57,14 @@
     <div class="card shadow-sm h-100">
       <div class="card-header">Transcript Files</div>
       <div class="card-body p-0">
+        <div class="p-3 border-bottom d-flex justify-content-end">
+          <button id="text-delete-button" class="btn btn-sm btn-outline-danger">Delete Selected</button>
+        </div>
         <div class="table-responsive">
           <table class="table table-striped table-hover mb-0">
             <thead>
               <tr>
+                <th style="width: 40px;"><input id="select-all-text" type="checkbox"></th>
                 <th>Name</th>
                 <th class="text-end">Download</th>
               </tr>
@@ -56,6 +72,7 @@
             <tbody>
               {% for file in text_files %}
               <tr>
+                <td><input type="checkbox" name="selected_text_files" value="{{ file }}"></td>
                 <td>{{ file }}</td>
                 <td class="text-end">
                   <a class="btn btn-sm btn-outline-secondary" href="/tools/transcriber/download/text/{{ file }}">Download</a>
@@ -63,7 +80,7 @@
               </tr>
               {% else %}
               <tr>
-                <td colspan="2" class="text-center text-muted py-3">No transcripts found</td>
+                <td colspan="3" class="text-center text-muted py-3">No transcripts found</td>
               </tr>
               {% endfor %}
             </tbody>
