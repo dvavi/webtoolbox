@@ -6,6 +6,7 @@ import logging
 import concurrent.futures
 from dataclasses import dataclass
 from pathlib import Path
+import socket
 from urllib import error, request
 
 from webtoolbox.tools.transcriber.progress import JobState, ProgressManager
@@ -37,6 +38,8 @@ class TranscriptionService:
         language: str,
     ) -> None:
         try:
+            if await self.progress_manager.is_cancelled(job_id):
+                return
             event_loop = asyncio.get_running_loop()
             await self.progress_manager.update(
                 job_id=job_id,
@@ -52,6 +55,8 @@ class TranscriptionService:
                 model_profile,
                 language,
             )
+            if await self.progress_manager.is_cancelled(job_id):
+                return
             await self.progress_manager.update(
                 job_id=job_id,
                 state=JobState.running,
@@ -77,6 +82,8 @@ class TranscriptionService:
                     "language": language,
                 },
             )
+        except asyncio.CancelledError:
+            await self.progress_manager.cancel_job(job_id)
         except Exception as exc:
             logger.exception(
                 "transcription_failed",
@@ -221,6 +228,8 @@ class TranscriptionService:
         lines: list[str] = []
 
         for index, segment in enumerate(segments, start=1):
+            if self.progress_manager.is_cancelled_sync(job_id):
+                raise asyncio.CancelledError()
             lines.append(segment.text.strip())
             if duration > 0:
                 percent = min(94, max(10, int((segment.end / duration) * 90)))
@@ -249,7 +258,11 @@ class TranscriptionService:
             message="Running openai-whisper transcription",
             percent=50,
         )
+        if self.progress_manager.is_cancelled_sync(job_id):
+            raise asyncio.CancelledError()
         result = model.transcribe(str(audio_path), language=language)
+        if self.progress_manager.is_cancelled_sync(job_id):
+            raise asyncio.CancelledError()
         return str(result.get("text", "")).strip()
 
 
@@ -286,6 +299,8 @@ class TranscriptLLMService:
             raise ValueError(f"Unsupported mode: {mode}")
 
         try:
+            if await self.progress_manager.is_cancelled(job_id):
+                return
             await self.progress_manager.update(
                 job_id=job_id,
                 state=JobState.running,
@@ -304,7 +319,9 @@ class TranscriptLLMService:
             )
 
             prompt = self._prompts[mode]
-            result_text = await asyncio.to_thread(self._call_ollama_sync, prompt, source_text)
+            result_text = await asyncio.to_thread(self._call_ollama_sync, prompt, source_text, job_id)
+            if await self.progress_manager.is_cancelled(job_id):
+                return
 
             await self.progress_manager.update(
                 job_id=job_id,
@@ -333,6 +350,8 @@ class TranscriptLLMService:
                     "base_url": self.base_url,
                 },
             )
+        except asyncio.CancelledError:
+            await self.progress_manager.cancel_job(job_id)
         except Exception as exc:
             logger.exception(
                 "transcript_llm_failed",
@@ -351,12 +370,12 @@ class TranscriptLLMService:
                 error=str(exc),
             )
 
-    def _call_ollama_sync(self, prompt: str, source_text: str) -> str:
+    def _call_ollama_sync(self, prompt: str, source_text: str, job_id: str) -> str:
         url = f"{self.base_url.rstrip('/')}/api/generate"
         payload = {
             "model": self.model,
             "prompt": f"{prompt}\n\n---\n\n{source_text}",
-            "stream": False,
+            "stream": True,
         }
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(
@@ -366,18 +385,45 @@ class TranscriptLLMService:
             method="POST",
         )
 
+        timeout_value = self.timeout_seconds if self.timeout_seconds > 0 else None
+
         try:
-            with request.urlopen(req, timeout=max(1, self.timeout_seconds)) as response:
-                raw = response.read().decode("utf-8")
+            if timeout_value is None:
+                response_ctx = request.urlopen(req)
+            else:
+                response_ctx = request.urlopen(req, timeout=timeout_value)
+
+            with response_ctx as response:
+                parts: list[str] = []
+                for raw_line in response:
+                    if self.progress_manager.is_cancelled_sync(job_id):
+                        raise asyncio.CancelledError()
+
+                    line = raw_line.decode("utf-8").strip()
+                    if not line:
+                        continue
+                    try:
+                        payload_line = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError("Invalid streaming JSON response from Ollama") from exc
+
+                    if payload_line.get("error"):
+                        raise RuntimeError(f"Ollama error: {payload_line['error']}")
+
+                    chunk = str(payload_line.get("response", ""))
+                    if chunk:
+                        parts.append(chunk)
+
+                    if payload_line.get("done") is True:
+                        break
         except error.URLError as exc:
             raise RuntimeError(f"Ollama request failed: {exc}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RuntimeError(
+                "Ollama request timed out. Increase WEBTOOLBOX_OLLAMA_TIMEOUT_SECONDS for large files."
+            ) from exc
 
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("Invalid JSON response from Ollama") from exc
-
-        output = str(parsed.get("response", "")).strip()
+        output = "".join(parts).strip()
         if not output:
             raise RuntimeError("Ollama returned empty response")
         return output

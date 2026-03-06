@@ -36,7 +36,7 @@ class Settings:
     whisper_beam_size: int = _get_env_int("WEBTOOLBOX_WHISPER_BEAM_SIZE", 1)
     ollama_base_url: str = os.getenv("WEBTOOLBOX_OLLAMA_BASE_URL", "http://192.168.1.104:11434")
     ollama_preferred_model: str = os.getenv("WEBTOOLBOX_OLLAMA_MODEL", "qwen2.5:14b")
-    ollama_timeout_seconds: int = _get_env_int("WEBTOOLBOX_OLLAMA_TIMEOUT_SECONDS", 300)
+    ollama_timeout_seconds: int = _get_env_int("WEBTOOLBOX_OLLAMA_TIMEOUT_SECONDS", 1200)
 
     @property
     def audio_dir(self) -> Path:

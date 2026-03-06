@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -14,6 +15,7 @@ class JobState(str, Enum):
     running = "running"
     completed = "completed"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 @dataclass
@@ -34,8 +36,12 @@ class ProgressManager:
         self._events: dict[str, ProgressEvent] = {}
         self._queues: dict[str, list[asyncio.Queue[ProgressEvent]]] = {}
         self._lock = asyncio.Lock()
+        self._cancelled_jobs: set[str] = set()
+        self._cancel_lock = threading.Lock()
 
     async def init_job(self, job_id: str, message: str) -> None:
+        with self._cancel_lock:
+            self._cancelled_jobs.discard(job_id)
         await self.update(job_id=job_id, state=JobState.pending, message=message, percent=0)
 
     async def update(
@@ -78,6 +84,33 @@ class ProgressManager:
     async def latest(self, job_id: str) -> ProgressEvent | None:
         async with self._lock:
             return self._events.get(job_id)
+
+    async def cancel_job(self, job_id: str) -> bool:
+        async with self._lock:
+            latest = self._events.get(job_id)
+        if latest is None:
+            return False
+        if latest.state in {JobState.completed, JobState.failed, JobState.cancelled}:
+            return True
+
+        with self._cancel_lock:
+            self._cancelled_jobs.add(job_id)
+
+        await self.update(
+            job_id=job_id,
+            state=JobState.cancelled,
+            message="Job cancelled by user",
+            percent=latest.percent,
+        )
+        return True
+
+    def is_cancelled_sync(self, job_id: str) -> bool:
+        with self._cancel_lock:
+            return job_id in self._cancelled_jobs
+
+    async def is_cancelled(self, job_id: str) -> bool:
+        with self._cancel_lock:
+            return job_id in self._cancelled_jobs
 
     async def subscribe(self, job_id: str) -> asyncio.Queue[ProgressEvent]:
         queue: asyncio.Queue[ProgressEvent] = asyncio.Queue()

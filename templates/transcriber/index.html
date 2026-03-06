@@ -206,7 +206,14 @@
     const row = document.createElement("div");
     row.className = "small border rounded p-2 mb-2";
     row.id = `job-${job.job_id}`;
-    row.textContent = `${actionLabel} - ${fileLabel}: queued`;
+    row.innerHTML = `
+      <div class="d-flex justify-content-between align-items-start gap-2">
+        <span class="job-status-text">${actionLabel} - ${fileLabel}: queued</span>
+        <button class="btn btn-sm btn-outline-warning job-cancel-btn" data-job-id="${job.job_id}" type="button">Cancel</button>
+      </div>
+    `;
+    const rowText = row.querySelector(".job-status-text");
+    const rowCancelButton = row.querySelector(".job-cancel-btn");
     jobList.prepend(row);
     appendLog(`${actionLabel} - ${fileLabel}: queued`);
 
@@ -216,7 +223,9 @@
       const data = JSON.parse(evt.data);
       const percent = Number.isInteger(data.percent) ? data.percent : null;
       const suffix = percent !== null ? ` (${percent}%)` : "";
-      row.textContent = `${actionLabel} - ${fileLabel}: ${data.message}${suffix}`;
+      if (rowText) {
+        rowText.textContent = `${actionLabel} - ${fileLabel}: ${data.message}${suffix}`;
+      }
       message.textContent = `${actionLabel} - ${fileLabel}: ${data.message}${suffix}`;
 
       if (percent !== null) {
@@ -228,6 +237,9 @@
       if (data.state === "failed") {
         jobPercents.set(job.job_id, jobPercents.get(job.job_id) ?? 0);
       }
+      if (data.state === "cancelled") {
+        jobPercents.delete(job.job_id);
+      }
       renderOverallProgress();
 
       const statusLabel = data.state ? ` [${data.state}]` : "";
@@ -237,12 +249,26 @@
       if (data.state === "completed") {
         row.classList.add("border-success");
         row.classList.add("bg-success-subtle");
+        if (rowCancelButton) {
+          rowCancelButton.disabled = true;
+        }
         refreshLists();
         socket.close();
       }
       if (data.state === "failed") {
         row.classList.add("border-danger");
         row.classList.add("bg-danger-subtle");
+        if (rowCancelButton) {
+          rowCancelButton.disabled = true;
+        }
+        socket.close();
+      }
+      if (data.state === "cancelled") {
+        row.classList.add("border-warning");
+        row.classList.add("bg-warning-subtle");
+        if (rowCancelButton) {
+          rowCancelButton.disabled = true;
+        }
         socket.close();
       }
     };
@@ -364,6 +390,22 @@
     if (target.id === "text-summary-button") {
       event.preventDefault();
       await startTextJobs("/tools/transcriber/text/summarize", "Summary");
+      return;
+    }
+
+    if (target.classList.contains("job-cancel-btn")) {
+      event.preventDefault();
+      const jobId = target.dataset.jobId;
+      if (!jobId) {
+        return;
+      }
+      const response = await fetch(`/tools/transcriber/jobs/${jobId}/cancel`, { method: "POST" });
+      if (!response.ok) {
+        appendLog(`Cancel failed for job ${jobId}`);
+        return;
+      }
+      target.disabled = true;
+      appendLog(`Cancel requested for job ${jobId}`);
     }
   });
 

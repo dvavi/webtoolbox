@@ -32,6 +32,7 @@ The transcriber tool stores files under a single data root:
   - Background transcription jobs
   - Transcript cleanup (`Format Text`) via local Ollama model
   - Transcript summarization (`Make Summary`) via local Ollama model
+  - Per-job cancellation from the progress panel
   - Live progress updates over WebSocket
 - Transcript output naming rule:
   - `meeting01.wav` -> `meeting01.txt`
@@ -69,7 +70,7 @@ Environment variables:
 - `WEBTOOLBOX_WHISPER_BEAM_SIZE` (default: `1`, faster than beam size 5)
 - `WEBTOOLBOX_OLLAMA_BASE_URL` (default: `http://192.168.1.104:11434`)
 - `WEBTOOLBOX_OLLAMA_MODEL` (default: `qwen2.5:14b`)
-- `WEBTOOLBOX_OLLAMA_TIMEOUT_SECONDS` (default: `300`)
+- `WEBTOOLBOX_OLLAMA_TIMEOUT_SECONDS` (default: `1200`, set `0` to use no client timeout)
 
 ## Special Estonian model setup
 

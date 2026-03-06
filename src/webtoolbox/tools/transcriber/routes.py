@@ -419,6 +419,14 @@ async def summarize_text_bulk(selected_files: list[str] = Form(default=[])) -> J
     return JSONResponse({"jobs": jobs})
 
 
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str) -> JSONResponse:
+    success = await progress_manager.cancel_job(job_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JSONResponse({"job_id": job_id, "status": "cancelled"})
+
+
 @router.websocket("/ws/{job_id}")
 async def transcription_ws(websocket: WebSocket, job_id: str) -> None:
     await websocket.accept()
@@ -431,7 +439,7 @@ async def transcription_ws(websocket: WebSocket, job_id: str) -> None:
         while True:
             event = await queue.get()
             await websocket.send_text(json.dumps(event.__dict__))
-            if event.state in {JobState.completed, JobState.failed}:
+            if event.state in {JobState.completed, JobState.failed, JobState.cancelled}:
                 break
     except WebSocketDisconnect:
         logger.info("websocket_disconnected", extra={"job_id": job_id})
