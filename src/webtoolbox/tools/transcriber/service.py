@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import concurrent.futures
 from dataclasses import dataclass
 from pathlib import Path
+from urllib import error, request
 
 from webtoolbox.tools.transcriber.progress import JobState, ProgressManager
 
@@ -249,3 +251,133 @@ class TranscriptionService:
         )
         result = model.transcribe(str(audio_path), language=language)
         return str(result.get("text", "")).strip()
+
+
+@dataclass
+class TranscriptLLMService:
+    """Formats and summarizes transcript text files using a local Ollama model."""
+
+    base_url: str
+    model: str
+    timeout_seconds: int
+    prompts_dir: Path
+    progress_manager: ProgressManager
+
+    def __post_init__(self) -> None:
+        self._prompts = {
+            "format": self._load_prompt("format_prompt.txt"),
+            "summary": self._load_prompt("summary_prompt.txt"),
+        }
+
+    def _load_prompt(self, filename: str) -> str:
+        path = self.prompts_dir / filename
+        if not path.exists():
+            raise FileNotFoundError(f"Prompt file not found: {path}")
+        return path.read_text(encoding="utf-8").strip()
+
+    async def process_transcript(
+        self,
+        job_id: str,
+        source_path: Path,
+        output_path: Path,
+        mode: str,
+    ) -> None:
+        if mode not in self._prompts:
+            raise ValueError(f"Unsupported mode: {mode}")
+
+        try:
+            await self.progress_manager.update(
+                job_id=job_id,
+                state=JobState.running,
+                message="Reading transcript",
+                percent=5,
+            )
+            source_text = source_path.read_text(encoding="utf-8")
+            if not source_text.strip():
+                raise ValueError("Transcript is empty")
+
+            await self.progress_manager.update(
+                job_id=job_id,
+                state=JobState.running,
+                message="Sending text to Ollama",
+                percent=30,
+            )
+
+            prompt = self._prompts[mode]
+            result_text = await asyncio.to_thread(self._call_ollama_sync, prompt, source_text)
+
+            await self.progress_manager.update(
+                job_id=job_id,
+                state=JobState.running,
+                message="Saving result file",
+                percent=90,
+            )
+            output_path.write_text(result_text, encoding="utf-8")
+
+            completed_message = "Formatted transcript created" if mode == "format" else "Transcript summary created"
+            await self.progress_manager.update(
+                job_id=job_id,
+                state=JobState.completed,
+                message=completed_message,
+                percent=100,
+                transcript_file=output_path.name,
+            )
+            logger.info(
+                "transcript_llm_completed",
+                extra={
+                    "job_id": job_id,
+                    "source_file": source_path.name,
+                    "output_file": output_path.name,
+                    "mode": mode,
+                    "model": self.model,
+                    "base_url": self.base_url,
+                },
+            )
+        except Exception as exc:
+            logger.exception(
+                "transcript_llm_failed",
+                extra={
+                    "job_id": job_id,
+                    "source_file": source_path.name,
+                    "output_file": output_path.name,
+                    "mode": mode,
+                    "error": str(exc),
+                },
+            )
+            await self.progress_manager.update(
+                job_id=job_id,
+                state=JobState.failed,
+                message="Transcript processing failed",
+                error=str(exc),
+            )
+
+    def _call_ollama_sync(self, prompt: str, source_text: str) -> str:
+        url = f"{self.base_url.rstrip('/')}/api/generate"
+        payload = {
+            "model": self.model,
+            "prompt": f"{prompt}\n\n---\n\n{source_text}",
+            "stream": False,
+        }
+        body = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            url=url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with request.urlopen(req, timeout=max(1, self.timeout_seconds)) as response:
+                raw = response.read().decode("utf-8")
+        except error.URLError as exc:
+            raise RuntimeError(f"Ollama request failed: {exc}") from exc
+
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Invalid JSON response from Ollama") from exc
+
+        output = str(parsed.get("response", "")).strip()
+        if not output:
+            raise RuntimeError("Ollama returned empty response")
+        return output

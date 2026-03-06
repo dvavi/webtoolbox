@@ -30,9 +30,13 @@ The transcriber tool stores files under a single data root:
   - Model profile selection (`General` or `Special Estonian`)
   - Language selection (`Auto`, `Estonian`, `Russian`, `English`)
   - Background transcription jobs
+  - Transcript cleanup (`Format Text`) via local Ollama model
+  - Transcript summarization (`Make Summary`) via local Ollama model
   - Live progress updates over WebSocket
 - Transcript output naming rule:
   - `meeting01.wav` -> `meeting01.txt`
+  - `meeting01.txt` -> `meeting01_formatted.txt` (or numbered if already exists)
+  - `meeting01.txt` -> `meeting01_summary.txt` (or numbered if already exists)
 - Structured log file for all key actions:
   - requests
   - uploads/downloads/rename/delete
@@ -63,6 +67,9 @@ Environment variables:
 - `WEBTOOLBOX_WHISPER_CPU_THREADS` (default: `0`, lets runtime choose)
 - `WEBTOOLBOX_WHISPER_NUM_WORKERS` (default: `1`)
 - `WEBTOOLBOX_WHISPER_BEAM_SIZE` (default: `1`, faster than beam size 5)
+- `WEBTOOLBOX_OLLAMA_BASE_URL` (default: `http://192.168.1.104:11434`)
+- `WEBTOOLBOX_OLLAMA_MODEL` (default: `qwen2.5:14b`)
+- `WEBTOOLBOX_OLLAMA_TIMEOUT_SECONDS` (default: `300`)
 
 ## Special Estonian model setup
 

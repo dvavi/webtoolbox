@@ -14,7 +14,7 @@ from webtoolbox.common.file_utils import InvalidFilenameError, validate_filename
 from webtoolbox.config import settings
 from webtoolbox.tools.transcriber.file_store import AudioStore, TextStore
 from webtoolbox.tools.transcriber.progress import JobState, ProgressManager
-from webtoolbox.tools.transcriber.service import TranscriptionService
+from webtoolbox.tools.transcriber.service import TranscriptLLMService, TranscriptionService
 
 logger = logging.getLogger(__name__)
 templates = Jinja2Templates(directory="templates")
@@ -36,6 +36,13 @@ transcription_service = TranscriptionService(
     beam_size=settings.whisper_beam_size,
     progress_manager=progress_manager,
 )
+transcript_llm_service = TranscriptLLMService(
+    base_url=settings.ollama_base_url,
+    model=settings.ollama_preferred_model,
+    timeout_seconds=settings.ollama_timeout_seconds,
+    prompts_dir=Path(__file__).parent / "prompts",
+    progress_manager=progress_manager,
+)
 
 MODEL_PROFILES = {"general", "estonian"}
 TRANSCRIBE_LANGUAGES = {"auto", "et", "ru", "en"}
@@ -44,6 +51,26 @@ TRANSCRIBE_LANGUAGES = {"auto", "et", "ru", "en"}
 
 def _safe_transcript_name(audio_file: str) -> str:
     return f"{Path(audio_file).stem}.txt"
+
+
+def _derived_text_name(filename: str, suffix: str) -> str:
+    stem = Path(filename).stem
+    return f"{stem}_{suffix}.txt"
+
+
+def _next_available_text_name(preferred_name: str) -> str:
+    candidate = text_store.base_dir / preferred_name
+    if not candidate.exists():
+        return preferred_name
+
+    stem = candidate.stem
+    ext = candidate.suffix
+    for index in range(2, 1000):
+        next_name = f"{stem}_{index}{ext}"
+        if not (text_store.base_dir / next_name).exists():
+            return next_name
+
+    raise HTTPException(status_code=500, detail="Too many similarly named output files")
 
 
 def _list_context() -> dict[str, object]:
@@ -288,6 +315,108 @@ async def delete_text_bulk(request: Request, selected_files: list[str] = Form(de
 
     logger.info("text_bulk_delete", extra={"files": deleted, "count": len(deleted)})
     return await transcriber_lists_partial(request)
+
+
+@router.post("/text/format")
+async def format_text_bulk(selected_files: list[str] = Form(default=[])) -> JSONResponse:
+    if not selected_files:
+        raise HTTPException(status_code=400, detail="Select at least one transcript file")
+
+    jobs: list[dict[str, str]] = []
+    for filename in selected_files:
+        try:
+            safe_name = validate_filename(filename)
+            source_path = text_store.get_path(safe_name)
+        except (InvalidFilenameError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        output_name = _next_available_text_name(_derived_text_name(safe_name, "formatted"))
+        output_path = text_store.base_dir / output_name
+
+        job_id = str(uuid4())
+        await progress_manager.init_job(job_id=job_id, message=f"Formatting queued for {safe_name}")
+
+        logger.info(
+            "transcript_format_started",
+            extra={
+                "job_id": job_id,
+                "source_file": safe_name,
+                "output_file": output_name,
+                "model": settings.ollama_preferred_model,
+                "base_url": settings.ollama_base_url,
+            },
+        )
+
+        asyncio.create_task(
+            transcript_llm_service.process_transcript(
+                job_id=job_id,
+                source_path=source_path,
+                output_path=output_path,
+                mode="format",
+            )
+        )
+
+        jobs.append(
+            {
+                "job_id": job_id,
+                "source_file": safe_name,
+                "output_file": output_name,
+                "action": "format",
+            }
+        )
+
+    return JSONResponse({"jobs": jobs})
+
+
+@router.post("/text/summarize")
+async def summarize_text_bulk(selected_files: list[str] = Form(default=[])) -> JSONResponse:
+    if not selected_files:
+        raise HTTPException(status_code=400, detail="Select at least one transcript file")
+
+    jobs: list[dict[str, str]] = []
+    for filename in selected_files:
+        try:
+            safe_name = validate_filename(filename)
+            source_path = text_store.get_path(safe_name)
+        except (InvalidFilenameError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        output_name = _next_available_text_name(_derived_text_name(safe_name, "summary"))
+        output_path = text_store.base_dir / output_name
+
+        job_id = str(uuid4())
+        await progress_manager.init_job(job_id=job_id, message=f"Summary queued for {safe_name}")
+
+        logger.info(
+            "transcript_summary_started",
+            extra={
+                "job_id": job_id,
+                "source_file": safe_name,
+                "output_file": output_name,
+                "model": settings.ollama_preferred_model,
+                "base_url": settings.ollama_base_url,
+            },
+        )
+
+        asyncio.create_task(
+            transcript_llm_service.process_transcript(
+                job_id=job_id,
+                source_path=source_path,
+                output_path=output_path,
+                mode="summary",
+            )
+        )
+
+        jobs.append(
+            {
+                "job_id": job_id,
+                "source_file": safe_name,
+                "output_file": output_name,
+                "action": "summary",
+            }
+        )
+
+    return JSONResponse({"jobs": jobs})
 
 
 @router.websocket("/ws/{job_id}")

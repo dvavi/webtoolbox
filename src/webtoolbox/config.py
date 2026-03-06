@@ -31,9 +31,12 @@ class Settings:
     estonian_model: str = os.getenv("WEBTOOLBOX_WHISPER_ESTONIAN_MODEL", "")
     default_model_profile: str = os.getenv("WEBTOOLBOX_DEFAULT_MODEL_PROFILE", "general")
     default_transcribe_language: str = os.getenv("WEBTOOLBOX_DEFAULT_TRANSCRIBE_LANGUAGE", "auto")
-    whisper_cpu_threads: int = _get_env_int("WEBTOOLBOX_WHISPER_CPU_THREADS", 0)
-    whisper_num_workers: int = _get_env_int("WEBTOOLBOX_WHISPER_NUM_WORKERS", 1)
+    whisper_cpu_threads: int = _get_env_int("WEBTOOLBOX_WHISPER_CPU_THREADS", 12)
+    whisper_num_workers: int = _get_env_int("WEBTOOLBOX_WHISPER_NUM_WORKERS", 2)
     whisper_beam_size: int = _get_env_int("WEBTOOLBOX_WHISPER_BEAM_SIZE", 1)
+    ollama_base_url: str = os.getenv("WEBTOOLBOX_OLLAMA_BASE_URL", "http://192.168.1.104:11434")
+    ollama_preferred_model: str = os.getenv("WEBTOOLBOX_OLLAMA_MODEL", "qwen2.5:14b")
+    ollama_timeout_seconds: int = _get_env_int("WEBTOOLBOX_OLLAMA_TIMEOUT_SECONDS", 300)
 
     @property
     def audio_dir(self) -> Path:

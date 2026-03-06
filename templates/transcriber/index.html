@@ -193,24 +193,31 @@
   };
 
   const monitorJob = (job) => {
+    const fileLabel = job.audio_file || job.source_file || job.output_file || "file";
+    const actionLabel = job.action === "format"
+      ? "Format"
+      : job.action === "summary"
+        ? "Summary"
+        : "Transcribe";
+
     jobPercents.set(job.job_id, 0);
     renderOverallProgress();
 
     const row = document.createElement("div");
     row.className = "small border rounded p-2 mb-2";
     row.id = `job-${job.job_id}`;
-    row.textContent = `${job.audio_file}: queued`;
+    row.textContent = `${actionLabel} - ${fileLabel}: queued`;
     jobList.prepend(row);
-    appendLog(`${job.audio_file}: queued`);
+    appendLog(`${actionLabel} - ${fileLabel}: queued`);
 
     const socket = new WebSocket(`${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/tools/transcriber/ws/${job.job_id}`);
-    socket.onopen = () => appendLog(`${job.audio_file}: websocket connected`);
+    socket.onopen = () => appendLog(`${actionLabel} - ${fileLabel}: websocket connected`);
     socket.onmessage = (evt) => {
       const data = JSON.parse(evt.data);
       const percent = Number.isInteger(data.percent) ? data.percent : null;
       const suffix = percent !== null ? ` (${percent}%)` : "";
-      row.textContent = `${job.audio_file}: ${data.message}${suffix}`;
-      message.textContent = `${job.audio_file}: ${data.message}${suffix}`;
+      row.textContent = `${actionLabel} - ${fileLabel}: ${data.message}${suffix}`;
+      message.textContent = `${actionLabel} - ${fileLabel}: ${data.message}${suffix}`;
 
       if (percent !== null) {
         jobPercents.set(job.job_id, percent);
@@ -225,7 +232,7 @@
 
       const statusLabel = data.state ? ` [${data.state}]` : "";
       const details = data.error ? ` Error: ${data.error}` : "";
-      appendLog(`${job.audio_file}${statusLabel}: ${data.message}${suffix}${details}`);
+      appendLog(`${actionLabel} - ${fileLabel}${statusLabel}: ${data.message}${suffix}${details}`);
 
       if (data.state === "completed") {
         row.classList.add("border-success");
@@ -240,10 +247,37 @@
       }
     };
     socket.onerror = () => {
-      appendLog(`${job.audio_file}: websocket error`);
+      appendLog(`${actionLabel} - ${fileLabel}: websocket error`);
       row.classList.add("border-danger");
     };
-    socket.onclose = () => appendLog(`${job.audio_file}: websocket closed`);
+    socket.onclose = () => appendLog(`${actionLabel} - ${fileLabel}: websocket closed`);
+  };
+
+  const startTextJobs = async (endpoint, actionLabel) => {
+    const files = selectedText();
+    if (files.length === 0) {
+      alert("Select at least one transcript file.");
+      return;
+    }
+
+    const formData = new FormData();
+    files.forEach((file) => formData.append("selected_files", file));
+
+    const response = await fetch(endpoint, { method: "POST", body: formData });
+    if (!response.ok) {
+      const errorText = await response.text();
+      panel.classList.remove("d-none");
+      message.textContent = `${actionLabel} failed to start`;
+      appendLog(`${actionLabel} failed for ${files.length} file(s). ${errorText}`);
+      return;
+    }
+
+    const payload = await response.json();
+    panel.classList.remove("d-none");
+    appendLog(`${actionLabel} started for ${payload.jobs.length} file(s)`);
+    message.textContent = `${actionLabel} started for ${payload.jobs.length} file(s)`;
+    payload.jobs.forEach(monitorJob);
+    refreshLists();
   };
 
   document.body.addEventListener("click", async (event) => {
@@ -318,6 +352,18 @@
 
       payload.jobs.forEach(monitorJob);
       refreshLists();
+      return;
+    }
+
+    if (target.id === "text-format-button") {
+      event.preventDefault();
+      await startTextJobs("/tools/transcriber/text/format", "Format text");
+      return;
+    }
+
+    if (target.id === "text-summary-button") {
+      event.preventDefault();
+      await startTextJobs("/tools/transcriber/text/summarize", "Summary");
     }
   });
 

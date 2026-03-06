@@ -57,8 +57,13 @@
     <div class="card shadow-sm h-100">
       <div class="card-header">Transcript Files</div>
       <div class="card-body p-0">
-        <div class="p-3 border-bottom d-flex justify-content-end">
-          <button id="text-delete-button" class="btn btn-sm btn-outline-danger">Delete Selected</button>
+        <div class="p-3 border-bottom">
+          <p class="small text-muted mb-2">Select transcript file(s), then run one of the actions below.</p>
+          <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+            <button id="text-format-button" class="btn btn-sm btn-primary">Format Text</button>
+            <button id="text-summary-button" class="btn btn-sm btn-info text-white">Make Summary</button>
+            <button id="text-delete-button" class="btn btn-sm btn-outline-danger">Delete Selected</button>
+          </div>
         </div>
         <div class="table-responsive">
           <table class="table table-striped table-hover mb-0">
