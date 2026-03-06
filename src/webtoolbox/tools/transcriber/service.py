@@ -305,6 +305,7 @@ class TranscriptLLMService:
         try:
             if await self.progress_manager.is_cancelled(job_id):
                 return
+            provider_label = "OpenAI" if (provider or "").strip().lower() == "openai" else "Ollama"
             await self.progress_manager.update(
                 job_id=job_id,
                 state=JobState.running,
@@ -318,7 +319,7 @@ class TranscriptLLMService:
             await self.progress_manager.update(
                 job_id=job_id,
                 state=JobState.running,
-                message="Sending text to Ollama",
+                message=f"Sending text to {provider_label}",
                 percent=30,
             )
 
@@ -408,7 +409,6 @@ class TranscriptLLMService:
         url = f"{self.openai_base_url.rstrip('/')}/chat/completions"
         payload = {
             "model": model,
-            "temperature": 0.1,
             "messages": [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": source_text},
@@ -437,6 +437,15 @@ class TranscriptLLMService:
                 raw = response.read().decode("utf-8")
         except error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
+            normalized = error_body.lower()
+            if exc.code == 429 and "insufficient_quota" in normalized:
+                raise RuntimeError(
+                    "OpenAI quota exceeded (insufficient_quota). Add billing/credits or switch provider to Ollama."
+                ) from exc
+            if exc.code == 429:
+                raise RuntimeError(
+                    "OpenAI rate limit reached (429). Retry later, reduce concurrency, or use another provider/model."
+                ) from exc
             raise RuntimeError(f"OpenAI HTTP error: {exc.code} {error_body}") from exc
         except error.URLError as exc:
             raise RuntimeError(f"OpenAI request failed: {exc}") from exc
