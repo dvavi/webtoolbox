@@ -192,6 +192,67 @@
     htmx.ajax("GET", "/tools/transcriber/partials/lists", { target: "#file-lists", swap: "innerHTML" });
   };
 
+  const parseJsonArray = (value) => {
+    try {
+      const parsed = JSON.parse(value || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      return [];
+    }
+  };
+
+  const syncLlmModelOptions = () => {
+    const providerSelect = document.getElementById("llm-provider-select");
+    const modelSelect = document.getElementById("llm-model-select");
+    if (!providerSelect || !modelSelect) {
+      return;
+    }
+
+    const provider = providerSelect.value;
+    const openaiModels = parseJsonArray(modelSelect.dataset.openaiModels);
+    const ollamaModels = parseJsonArray(modelSelect.dataset.ollamaModels);
+    const selectedFromDataset = modelSelect.dataset.selectedModel || "";
+    const currentSelected = modelSelect.value || selectedFromDataset;
+    const models = provider === "openai" ? openaiModels : ollamaModels;
+
+    modelSelect.innerHTML = "";
+    models.forEach((modelName) => {
+      const option = document.createElement("option");
+      option.value = modelName;
+      option.textContent = modelName;
+      modelSelect.appendChild(option);
+    });
+
+    if (models.length === 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No models configured";
+      modelSelect.appendChild(option);
+      modelSelect.value = "";
+      modelSelect.disabled = true;
+      return;
+    }
+
+    modelSelect.disabled = false;
+    if (models.includes(currentSelected)) {
+      modelSelect.value = currentSelected;
+    } else {
+      modelSelect.value = models[0];
+    }
+    modelSelect.dataset.selectedModel = modelSelect.value;
+  };
+
+  const llmOptions = () => {
+    const providerSelect = document.getElementById("llm-provider-select");
+    const modelSelect = document.getElementById("llm-model-select");
+    return {
+      provider: providerSelect ? providerSelect.value : "openai",
+      model: modelSelect ? modelSelect.value : ""
+    };
+  };
+
+  syncLlmModelOptions();
+
   const monitorJob = (job) => {
     const fileLabel = job.audio_file || job.source_file || job.output_file || "file";
     const actionLabel = job.action === "format"
@@ -199,6 +260,7 @@
       : job.action === "summary"
         ? "Summary"
         : "Transcribe";
+    const modelLabel = job.provider && job.model ? ` [${job.provider}:${job.model}]` : "";
 
     jobPercents.set(job.job_id, 0);
     renderOverallProgress();
@@ -208,25 +270,25 @@
     row.id = `job-${job.job_id}`;
     row.innerHTML = `
       <div class="d-flex justify-content-between align-items-start gap-2">
-        <span class="job-status-text">${actionLabel} - ${fileLabel}: queued</span>
+        <span class="job-status-text">${actionLabel} - ${fileLabel}${modelLabel}: queued</span>
         <button class="btn btn-sm btn-outline-warning job-cancel-btn" data-job-id="${job.job_id}" type="button">Cancel</button>
       </div>
     `;
     const rowText = row.querySelector(".job-status-text");
     const rowCancelButton = row.querySelector(".job-cancel-btn");
     jobList.prepend(row);
-    appendLog(`${actionLabel} - ${fileLabel}: queued`);
+    appendLog(`${actionLabel} - ${fileLabel}${modelLabel}: queued`);
 
     const socket = new WebSocket(`${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/tools/transcriber/ws/${job.job_id}`);
-    socket.onopen = () => appendLog(`${actionLabel} - ${fileLabel}: websocket connected`);
+    socket.onopen = () => appendLog(`${actionLabel} - ${fileLabel}${modelLabel}: websocket connected`);
     socket.onmessage = (evt) => {
       const data = JSON.parse(evt.data);
       const percent = Number.isInteger(data.percent) ? data.percent : null;
       const suffix = percent !== null ? ` (${percent}%)` : "";
       if (rowText) {
-        rowText.textContent = `${actionLabel} - ${fileLabel}: ${data.message}${suffix}`;
+        rowText.textContent = `${actionLabel} - ${fileLabel}${modelLabel}: ${data.message}${suffix}`;
       }
-      message.textContent = `${actionLabel} - ${fileLabel}: ${data.message}${suffix}`;
+      message.textContent = `${actionLabel} - ${fileLabel}${modelLabel}: ${data.message}${suffix}`;
 
       if (percent !== null) {
         jobPercents.set(job.job_id, percent);
@@ -244,7 +306,7 @@
 
       const statusLabel = data.state ? ` [${data.state}]` : "";
       const details = data.error ? ` Error: ${data.error}` : "";
-      appendLog(`${actionLabel} - ${fileLabel}${statusLabel}: ${data.message}${suffix}${details}`);
+      appendLog(`${actionLabel} - ${fileLabel}${modelLabel}${statusLabel}: ${data.message}${suffix}${details}`);
 
       if (data.state === "completed") {
         row.classList.add("border-success");
@@ -273,10 +335,10 @@
       }
     };
     socket.onerror = () => {
-      appendLog(`${actionLabel} - ${fileLabel}: websocket error`);
+      appendLog(`${actionLabel} - ${fileLabel}${modelLabel}: websocket error`);
       row.classList.add("border-danger");
     };
-    socket.onclose = () => appendLog(`${actionLabel} - ${fileLabel}: websocket closed`);
+    socket.onclose = () => appendLog(`${actionLabel} - ${fileLabel}${modelLabel}: websocket closed`);
   };
 
   const startTextJobs = async (endpoint, actionLabel) => {
@@ -288,6 +350,9 @@
 
     const formData = new FormData();
     files.forEach((file) => formData.append("selected_files", file));
+    const options = llmOptions();
+    formData.append("llm_provider", options.provider);
+    formData.append("llm_model", options.model);
 
     const response = await fetch(endpoint, { method: "POST", body: formData });
     if (!response.ok) {
@@ -300,8 +365,8 @@
 
     const payload = await response.json();
     panel.classList.remove("d-none");
-    appendLog(`${actionLabel} started for ${payload.jobs.length} file(s)`);
-    message.textContent = `${actionLabel} started for ${payload.jobs.length} file(s)`;
+    appendLog(`${actionLabel} started for ${payload.jobs.length} file(s) using ${options.provider}:${options.model}`);
+    message.textContent = `${actionLabel} started for ${payload.jobs.length} file(s) using ${options.provider}:${options.model}`;
     payload.jobs.forEach(monitorJob);
     refreshLists();
   };
@@ -393,6 +458,11 @@
       return;
     }
 
+    if (target.id === "llm-provider-select") {
+      syncLlmModelOptions();
+      return;
+    }
+
     if (target.classList.contains("job-cancel-btn")) {
       event.preventDefault();
       const jobId = target.dataset.jobId;
@@ -415,6 +485,10 @@
       return;
     }
     if (target.id !== "select-all-audio") {
+      if (target.id === "llm-provider-select") {
+        syncLlmModelOptions();
+        return;
+      }
       if (target.id !== "select-all-text") {
         return;
       }
@@ -428,6 +502,13 @@
     document.querySelectorAll("input[name='selected_files']").forEach((checkbox) => {
       checkbox.checked = target.checked;
     });
+  });
+
+  document.body.addEventListener("htmx:afterSwap", (event) => {
+    const target = event.detail && event.detail.target;
+    if (target && target.id === "file-lists") {
+      syncLlmModelOptions();
+    }
   });
 })();
 </script>

@@ -15,6 +15,15 @@ def _get_env_int(name: str, default: int) -> int:
         return default
 
 
+def _get_env_list(name: str, default: list[str]) -> list[str]:
+    value = os.getenv(name)
+    if not value:
+        return default
+    items = [part.strip() for part in value.split(",")]
+    normalized = [item for item in items if item]
+    return normalized or default
+
+
 @dataclass(frozen=True)
 class Settings:
     """Application settings loaded from environment variables."""
@@ -34,8 +43,15 @@ class Settings:
     whisper_cpu_threads: int = _get_env_int("WEBTOOLBOX_WHISPER_CPU_THREADS", 12)
     whisper_num_workers: int = _get_env_int("WEBTOOLBOX_WHISPER_NUM_WORKERS", 2)
     whisper_beam_size: int = _get_env_int("WEBTOOLBOX_WHISPER_BEAM_SIZE", 1)
+    llm_default_provider: str = os.getenv("WEBTOOLBOX_LLM_PROVIDER", "openai")
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    openai_base_url: str = os.getenv("WEBTOOLBOX_OPENAI_BASE_URL", "https://api.openai.com/v1")
+    openai_default_model: str = os.getenv("WEBTOOLBOX_OPENAI_MODEL", "gpt-5-mini")
+    openai_models: list[str] = _get_env_list("WEBTOOLBOX_OPENAI_MODELS", ["gpt-5-mini", "gpt-5"])
+    openai_timeout_seconds: int = _get_env_int("WEBTOOLBOX_OPENAI_TIMEOUT_SECONDS", 120)
     ollama_base_url: str = os.getenv("WEBTOOLBOX_OLLAMA_BASE_URL", "http://192.168.1.104:11434")
-    ollama_preferred_model: str = os.getenv("WEBTOOLBOX_OLLAMA_MODEL", "qwen2.5:14b")
+    ollama_default_model: str = os.getenv("WEBTOOLBOX_OLLAMA_MODEL", "qwen2.5:7b")
+    ollama_models: list[str] = _get_env_list("WEBTOOLBOX_OLLAMA_MODELS", ["qwen2.5:7b", "qwen2.5:14b"])
     ollama_timeout_seconds: int = _get_env_int("WEBTOOLBOX_OLLAMA_TIMEOUT_SECONDS", 1200)
 
     @property

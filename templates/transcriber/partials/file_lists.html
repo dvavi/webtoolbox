@@ -8,8 +8,8 @@
             <div class="col-12 col-md-4">
               <label for="model-profile-select" class="form-label form-label-sm small text-muted mb-1">Model</label>
               <select id="model-profile-select" class="form-select form-select-sm">
-                <option value="general" {% if selected_model_profile == "general" %}selected{% endif %}>General</option>
-                <option value="estonian" {% if selected_model_profile == "estonian" %}selected{% endif %} {% if not estonian_model_configured %}disabled{% endif %}>Special Estonian{% if not estonian_model_configured %} (not configured){% endif %}</option>
+                <option value="general" {% if selected_model_profile == "general" %}selected{% endif %}>{{ transcribe_general_model_name }}</option>
+                <option value="estonian" {% if selected_model_profile == "estonian" %}selected{% endif %} {% if not estonian_model_configured %}disabled{% endif %}>{{ transcribe_estonian_model_name if estonian_model_configured else "WEBTOOLBOX_WHISPER_ESTONIAN_MODEL (not configured)" }}</option>
               </select>
             </div>
             <div class="col-12 col-md-3">
@@ -58,7 +58,21 @@
       <div class="card-header">Transcript Files</div>
       <div class="card-body p-0">
         <div class="p-3 border-bottom">
-          <p class="small text-muted mb-2">Select transcript file(s), then run one of the actions below.</p>
+          <div class="row g-2 align-items-end mb-2">
+            <div class="col-12 col-md-4">
+              <label for="llm-provider-select" class="form-label form-label-sm small text-muted mb-1">LLM Provider</label>
+              <select id="llm-provider-select" class="form-select form-select-sm">
+                <option value="openai" {% if selected_llm_provider == "openai" %}selected{% endif %} {% if not openai_configured %}disabled{% endif %}>OpenAI{% if not openai_configured %} (API key missing){% endif %}</option>
+                <option value="ollama" {% if selected_llm_provider == "ollama" %}selected{% endif %}>Ollama</option>
+              </select>
+            </div>
+            <div class="col-12 col-md-8">
+              <label for="llm-model-select" class="form-label form-label-sm small text-muted mb-1">LLM Model</label>
+              <select id="llm-model-select" class="form-select form-select-sm" data-openai-models='{{ openai_models | tojson }}' data-ollama-models='{{ ollama_models | tojson }}' data-selected-model='{{ selected_llm_model }}'>
+              </select>
+            </div>
+          </div>
+          <p class="small text-muted mb-2">Select transcript file(s), then run one of the actions below with the chosen provider/model.</p>
           <div class="d-grid gap-2 d-md-flex justify-content-md-end">
             <button id="text-format-button" class="btn btn-sm btn-primary">Format Text</button>
             <button id="text-summary-button" class="btn btn-sm btn-info text-white">Make Summary</button>

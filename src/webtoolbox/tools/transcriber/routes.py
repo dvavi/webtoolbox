@@ -37,15 +37,18 @@ transcription_service = TranscriptionService(
     progress_manager=progress_manager,
 )
 transcript_llm_service = TranscriptLLMService(
-    base_url=settings.ollama_base_url,
-    model=settings.ollama_preferred_model,
-    timeout_seconds=settings.ollama_timeout_seconds,
+    openai_api_key=settings.openai_api_key,
+    openai_base_url=settings.openai_base_url,
+    openai_timeout_seconds=settings.openai_timeout_seconds,
+    ollama_base_url=settings.ollama_base_url,
+    ollama_timeout_seconds=settings.ollama_timeout_seconds,
     prompts_dir=Path(__file__).parent / "prompts",
     progress_manager=progress_manager,
 )
 
 MODEL_PROFILES = {"general", "estonian"}
 TRANSCRIBE_LANGUAGES = {"auto", "et", "ru", "en"}
+LLM_PROVIDERS = {"openai", "ollama"}
 
 
 
@@ -74,12 +77,30 @@ def _next_available_text_name(preferred_name: str) -> str:
 
 
 def _list_context() -> dict[str, object]:
+    selected_provider = settings.llm_default_provider.strip().lower()
+    if selected_provider not in LLM_PROVIDERS:
+        selected_provider = "openai"
+    if selected_provider == "openai" and not settings.openai_api_key.strip():
+        selected_provider = "ollama"
+
+    openai_models = list(dict.fromkeys([settings.openai_default_model, *settings.openai_models]))
+    ollama_models = list(dict.fromkeys([settings.ollama_default_model, *settings.ollama_models]))
+
+    selected_model = settings.openai_default_model if selected_provider == "openai" else settings.ollama_default_model
+
     return {
         "audio_files": audio_store.list_files(),
         "text_files": text_store.list_files(),
         "selected_model_profile": settings.default_model_profile if settings.default_model_profile in MODEL_PROFILES else "general",
         "selected_language": settings.default_transcribe_language if settings.default_transcribe_language in TRANSCRIBE_LANGUAGES else "auto",
+        "transcribe_general_model_name": settings.model_size,
+        "transcribe_estonian_model_name": settings.estonian_model.strip(),
         "estonian_model_configured": bool(settings.estonian_model.strip()),
+        "selected_llm_provider": selected_provider,
+        "selected_llm_model": selected_model,
+        "openai_models": openai_models,
+        "ollama_models": ollama_models,
+        "openai_configured": bool(settings.openai_api_key.strip()),
     }
 
 
@@ -97,6 +118,31 @@ def _validate_transcription_options(model_profile: str, language: str) -> tuple[
             detail="Special Estonian model is not configured on server",
         )
     return profile, lang
+
+
+def _validate_llm_options(provider: str, model: str) -> tuple[str, str]:
+    selected_provider = (provider or settings.llm_default_provider).strip().lower()
+    selected_model = (model or "").strip()
+
+    if selected_provider not in LLM_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unknown LLM provider")
+
+    if selected_provider == "openai":
+        if not settings.openai_api_key.strip():
+            raise HTTPException(status_code=400, detail="OPENAI_API_KEY is not configured")
+        allowed_models = list(dict.fromkeys([settings.openai_default_model, *settings.openai_models]))
+        default_model = settings.openai_default_model
+    else:
+        allowed_models = list(dict.fromkeys([settings.ollama_default_model, *settings.ollama_models]))
+        default_model = settings.ollama_default_model
+
+    if not selected_model:
+        selected_model = default_model
+
+    if selected_model not in allowed_models:
+        raise HTTPException(status_code=400, detail="Unknown LLM model")
+
+    return selected_provider, selected_model
 
 
 async def _save_upload_streaming(upload: UploadFile) -> str:
@@ -318,9 +364,15 @@ async def delete_text_bulk(request: Request, selected_files: list[str] = Form(de
 
 
 @router.post("/text/format")
-async def format_text_bulk(selected_files: list[str] = Form(default=[])) -> JSONResponse:
+async def format_text_bulk(
+    selected_files: list[str] = Form(default=[]),
+    llm_provider: str = Form(default="openai"),
+    llm_model: str = Form(default=""),
+) -> JSONResponse:
     if not selected_files:
         raise HTTPException(status_code=400, detail="Select at least one transcript file")
+
+    provider, model = _validate_llm_options(llm_provider, llm_model)
 
     jobs: list[dict[str, str]] = []
     for filename in selected_files:
@@ -342,8 +394,8 @@ async def format_text_bulk(selected_files: list[str] = Form(default=[])) -> JSON
                 "job_id": job_id,
                 "source_file": safe_name,
                 "output_file": output_name,
-                "model": settings.ollama_preferred_model,
-                "base_url": settings.ollama_base_url,
+                "provider": provider,
+                "model": model,
             },
         )
 
@@ -353,6 +405,8 @@ async def format_text_bulk(selected_files: list[str] = Form(default=[])) -> JSON
                 source_path=source_path,
                 output_path=output_path,
                 mode="format",
+                provider=provider,
+                model=model,
             )
         )
 
@@ -362,6 +416,8 @@ async def format_text_bulk(selected_files: list[str] = Form(default=[])) -> JSON
                 "source_file": safe_name,
                 "output_file": output_name,
                 "action": "format",
+                "provider": provider,
+                "model": model,
             }
         )
 
@@ -369,9 +425,15 @@ async def format_text_bulk(selected_files: list[str] = Form(default=[])) -> JSON
 
 
 @router.post("/text/summarize")
-async def summarize_text_bulk(selected_files: list[str] = Form(default=[])) -> JSONResponse:
+async def summarize_text_bulk(
+    selected_files: list[str] = Form(default=[]),
+    llm_provider: str = Form(default="openai"),
+    llm_model: str = Form(default=""),
+) -> JSONResponse:
     if not selected_files:
         raise HTTPException(status_code=400, detail="Select at least one transcript file")
+
+    provider, model = _validate_llm_options(llm_provider, llm_model)
 
     jobs: list[dict[str, str]] = []
     for filename in selected_files:
@@ -393,8 +455,8 @@ async def summarize_text_bulk(selected_files: list[str] = Form(default=[])) -> J
                 "job_id": job_id,
                 "source_file": safe_name,
                 "output_file": output_name,
-                "model": settings.ollama_preferred_model,
-                "base_url": settings.ollama_base_url,
+                "provider": provider,
+                "model": model,
             },
         )
 
@@ -404,6 +466,8 @@ async def summarize_text_bulk(selected_files: list[str] = Form(default=[])) -> J
                 source_path=source_path,
                 output_path=output_path,
                 mode="summary",
+                provider=provider,
+                model=model,
             )
         )
 
@@ -413,6 +477,8 @@ async def summarize_text_bulk(selected_files: list[str] = Form(default=[])) -> J
                 "source_file": safe_name,
                 "output_file": output_name,
                 "action": "summary",
+                "provider": provider,
+                "model": model,
             }
         )
 

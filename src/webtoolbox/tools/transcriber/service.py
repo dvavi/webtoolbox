@@ -270,9 +270,11 @@ class TranscriptionService:
 class TranscriptLLMService:
     """Formats and summarizes transcript text files using a local Ollama model."""
 
-    base_url: str
-    model: str
-    timeout_seconds: int
+    openai_api_key: str
+    openai_base_url: str
+    openai_timeout_seconds: int
+    ollama_base_url: str
+    ollama_timeout_seconds: int
     prompts_dir: Path
     progress_manager: ProgressManager
 
@@ -294,6 +296,8 @@ class TranscriptLLMService:
         source_path: Path,
         output_path: Path,
         mode: str,
+        provider: str,
+        model: str,
     ) -> None:
         if mode not in self._prompts:
             raise ValueError(f"Unsupported mode: {mode}")
@@ -319,7 +323,14 @@ class TranscriptLLMService:
             )
 
             prompt = self._prompts[mode]
-            result_text = await asyncio.to_thread(self._call_ollama_sync, prompt, source_text, job_id)
+            result_text = await asyncio.to_thread(
+                self._call_provider_sync,
+                provider,
+                model,
+                prompt,
+                source_text,
+                job_id,
+            )
             if await self.progress_manager.is_cancelled(job_id):
                 return
 
@@ -346,8 +357,10 @@ class TranscriptLLMService:
                     "source_file": source_path.name,
                     "output_file": output_path.name,
                     "mode": mode,
-                    "model": self.model,
-                    "base_url": self.base_url,
+                    "provider": provider,
+                    "model": model,
+                    "openai_base_url": self.openai_base_url,
+                    "ollama_base_url": self.ollama_base_url,
                 },
             )
         except asyncio.CancelledError:
@@ -360,6 +373,8 @@ class TranscriptLLMService:
                     "source_file": source_path.name,
                     "output_file": output_path.name,
                     "mode": mode,
+                    "provider": provider,
+                    "model": model,
                     "error": str(exc),
                 },
             )
@@ -370,10 +385,85 @@ class TranscriptLLMService:
                 error=str(exc),
             )
 
-    def _call_ollama_sync(self, prompt: str, source_text: str, job_id: str) -> str:
-        url = f"{self.base_url.rstrip('/')}/api/generate"
+    def _call_provider_sync(
+        self,
+        provider: str,
+        model: str,
+        prompt: str,
+        source_text: str,
+        job_id: str,
+    ) -> str:
+        provider_name = (provider or "").strip().lower()
+        if provider_name == "openai":
+            return self._call_openai_sync(model=model, prompt=prompt, source_text=source_text)
+        if provider_name == "ollama":
+            return self._call_ollama_sync(model=model, prompt=prompt, source_text=source_text, job_id=job_id)
+        raise RuntimeError(f"Unsupported LLM provider: {provider}")
+
+    def _call_openai_sync(self, model: str, prompt: str, source_text: str) -> str:
+        api_key = self.openai_api_key.strip()
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is not configured")
+
+        url = f"{self.openai_base_url.rstrip('/')}/chat/completions"
         payload = {
-            "model": self.model,
+            "model": model,
+            "temperature": 0.1,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": source_text},
+            ],
+        }
+        body = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            url=url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+
+        timeout_value = self.openai_timeout_seconds if self.openai_timeout_seconds > 0 else None
+
+        try:
+            if timeout_value is None:
+                response_ctx = request.urlopen(req)
+            else:
+                response_ctx = request.urlopen(req, timeout=timeout_value)
+
+            with response_ctx as response:
+                raw = response.read().decode("utf-8")
+        except error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"OpenAI HTTP error: {exc.code} {error_body}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"OpenAI request failed: {exc}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RuntimeError(
+                "OpenAI request timed out. Increase WEBTOOLBOX_OPENAI_TIMEOUT_SECONDS for large files."
+            ) from exc
+
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Invalid JSON response from OpenAI") from exc
+
+        choices = parsed.get("choices", [])
+        if not choices:
+            raise RuntimeError("OpenAI returned no choices")
+
+        message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        output = str(message.get("content", "")).strip()
+        if not output:
+            raise RuntimeError("OpenAI returned empty response")
+        return output
+
+    def _call_ollama_sync(self, model: str, prompt: str, source_text: str, job_id: str) -> str:
+        url = f"{self.ollama_base_url.rstrip('/')}/api/generate"
+        payload = {
+            "model": model,
             "prompt": f"{prompt}\n\n---\n\n{source_text}",
             "stream": True,
         }
@@ -385,7 +475,7 @@ class TranscriptLLMService:
             method="POST",
         )
 
-        timeout_value = self.timeout_seconds if self.timeout_seconds > 0 else None
+        timeout_value = self.ollama_timeout_seconds if self.ollama_timeout_seconds > 0 else None
 
         try:
             if timeout_value is None:

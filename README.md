@@ -28,10 +28,12 @@ The transcriber tool stores files under a single data root:
   - Audio and transcript delete operations
   - Transcript download operations
   - Model profile selection (`General` or `Special Estonian`)
+    - UI now shows actual model names from config for both options
   - Language selection (`Auto`, `Estonian`, `Russian`, `English`)
   - Background transcription jobs
-  - Transcript cleanup (`Format Text`) via local Ollama model
-  - Transcript summarization (`Make Summary`) via local Ollama model
+  - Transcript cleanup (`Format Text`) via selected LLM provider/model
+  - Transcript summarization (`Make Summary`) via selected LLM provider/model
+  - Transcript LLM provider/model selectors (OpenAI or Ollama)
   - Per-job cancellation from the progress panel
   - Live progress updates over WebSocket
 - Transcript output naming rule:
@@ -65,11 +67,18 @@ Environment variables:
 - `WEBTOOLBOX_WHISPER_ESTONIAN_MODEL` (default: empty, required for `Special Estonian` profile)
 - `WEBTOOLBOX_DEFAULT_MODEL_PROFILE` (default: `general`)
 - `WEBTOOLBOX_DEFAULT_TRANSCRIBE_LANGUAGE` (default: `auto`)
-- `WEBTOOLBOX_WHISPER_CPU_THREADS` (default: `0`, lets runtime choose)
-- `WEBTOOLBOX_WHISPER_NUM_WORKERS` (default: `1`)
+- `WEBTOOLBOX_WHISPER_CPU_THREADS` (default: `12`)
+- `WEBTOOLBOX_WHISPER_NUM_WORKERS` (default: `2`)
 - `WEBTOOLBOX_WHISPER_BEAM_SIZE` (default: `1`, faster than beam size 5)
+- `WEBTOOLBOX_LLM_PROVIDER` (default: `openai`)
+- `OPENAI_API_KEY` (required for OpenAI)
+- `WEBTOOLBOX_OPENAI_BASE_URL` (default: `https://api.openai.com/v1`)
+- `WEBTOOLBOX_OPENAI_MODEL` (default: `gpt-5-mini`)
+- `WEBTOOLBOX_OPENAI_MODELS` (default: `gpt-5-mini,gpt-5`)
+- `WEBTOOLBOX_OPENAI_TIMEOUT_SECONDS` (default: `120`)
 - `WEBTOOLBOX_OLLAMA_BASE_URL` (default: `http://192.168.1.104:11434`)
-- `WEBTOOLBOX_OLLAMA_MODEL` (default: `qwen2.5:14b`)
+- `WEBTOOLBOX_OLLAMA_MODEL` (default: `qwen2.5:7b`)
+- `WEBTOOLBOX_OLLAMA_MODELS` (default: `qwen2.5:7b,qwen2.5:14b`)
 - `WEBTOOLBOX_OLLAMA_TIMEOUT_SECONDS` (default: `1200`, set `0` to use no client timeout)
 
 ## Special Estonian model setup
