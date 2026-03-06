@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -47,11 +47,15 @@ class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("WEBTOOLBOX_OPENAI_BASE_URL", "https://api.openai.com/v1")
     openai_default_model: str = os.getenv("WEBTOOLBOX_OPENAI_MODEL", "gpt-5-mini")
-    openai_models: list[str] = _get_env_list("WEBTOOLBOX_OPENAI_MODELS", ["gpt-5-mini", "gpt-5"])
+    openai_models: list[str] = field(
+        default_factory=lambda: _get_env_list("WEBTOOLBOX_OPENAI_MODELS", ["gpt-5-mini", "gpt-5"])
+    )
     openai_timeout_seconds: int = _get_env_int("WEBTOOLBOX_OPENAI_TIMEOUT_SECONDS", 120)
     ollama_base_url: str = os.getenv("WEBTOOLBOX_OLLAMA_BASE_URL", "http://192.168.1.104:11434")
     ollama_default_model: str = os.getenv("WEBTOOLBOX_OLLAMA_MODEL", "qwen2.5:7b")
-    ollama_models: list[str] = _get_env_list("WEBTOOLBOX_OLLAMA_MODELS", ["qwen2.5:7b", "qwen2.5:14b"])
+    ollama_models: list[str] = field(
+        default_factory=lambda: _get_env_list("WEBTOOLBOX_OLLAMA_MODELS", ["qwen2.5:7b", "qwen2.5:14b"])
+    )
     ollama_timeout_seconds: int = _get_env_int("WEBTOOLBOX_OLLAMA_TIMEOUT_SECONDS", 1200)
 
     @property
