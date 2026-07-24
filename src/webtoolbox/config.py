@@ -43,6 +43,7 @@ class Settings:
     whisper_cpu_threads: int = _get_env_int("WEBTOOLBOX_WHISPER_CPU_THREADS", 12)
     whisper_num_workers: int = _get_env_int("WEBTOOLBOX_WHISPER_NUM_WORKERS", 2)
     whisper_beam_size: int = _get_env_int("WEBTOOLBOX_WHISPER_BEAM_SIZE", 1)
+    api_token: str = os.getenv("WEBTOOLBOX_API_TOKEN", "")
     llm_default_provider: str = os.getenv("WEBTOOLBOX_LLM_PROVIDER", "openai")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("WEBTOOLBOX_OPENAI_BASE_URL", "https://api.openai.com/v1")

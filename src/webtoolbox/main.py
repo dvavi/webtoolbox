@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from webtoolbox.config import settings
 from webtoolbox.logging_setup import setup_logging
+from webtoolbox.tools.transcriber.api import router as transcriber_api_router
 from webtoolbox.tools.transcriber.routes import router as transcriber_router
 
 setup_logging(settings.logs_dir)
@@ -24,6 +25,7 @@ def create_app() -> FastAPI:
 
     app.mount("/static", StaticFiles(directory="static"), name="static")
     app.include_router(transcriber_router)
+    app.include_router(transcriber_api_router)
 
     @app.middleware("http")
     async def log_requests(request: Request, call_next):

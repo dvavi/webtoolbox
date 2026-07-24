@@ -113,6 +113,22 @@ class TranscriptionService:
             return self._run_faster_whisper(model, job_id, audio_path, event_loop, normalized_language)
         return self._run_openai_whisper(model, job_id, audio_path, event_loop, normalized_language)
 
+    def transcribe_sync(self, audio_path: Path, model_profile: str = "estonian", language: str = "et") -> str:
+        """Transcribe one audio file synchronously without UI job/progress state."""
+        model_name = self._resolve_model_name(model_profile)
+        model, engine = self._get_or_create_model_sync(model_name, model_profile)
+        self._engine_name = engine
+        if engine != "faster-whisper":
+            raise RuntimeError("The API requires a faster-whisper compatible CTranslate2 model.")
+
+        segments, _info = model.transcribe(
+            str(audio_path),
+            beam_size=max(1, self.beam_size),
+            vad_filter=True,
+            language=self._normalize_language(language),
+        )
+        return "\n".join(segment.text.strip() for segment in segments if segment.text.strip())
+
     def _resolve_model_name(self, model_profile: str) -> str:
         if model_profile == "estonian":
             model_name = self.estonian_model.strip()

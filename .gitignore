@@ -13,6 +13,7 @@ venv/
 logs/
 data/audio/
 data/transcripts/
+models/
 
 # OS/editor
 .DS_Store
