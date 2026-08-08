@@ -109,6 +109,7 @@
 (function () {
   const STORAGE_KEY = "webtoolbox_live_history_v1";
   const SETTINGS_KEY = "webtoolbox_live_settings_v1";
+  const LIVE_PARTIAL_FLUSH_MS = 4000;
 
   const elements = {
     toggleLive: document.getElementById("toggle-live"),
@@ -133,12 +134,17 @@
 
   const state = {
     isRunning: false,
+    isStopping: false,
     mediaRecorder: null,
     audioChunks: [],
+    chunkQueue: [],
+    captureEntryId: null,
+    chunkSequence: 0,
     stream: null,
     analyser: null,
     audioContext: null,
     monitorTimer: null,
+    partialFlushTimer: null,
     lastVoiceAt: 0,
     isSending: false,
     history: [],
@@ -271,6 +277,7 @@
   };
 
   const activeEntry = () => state.history.find((item) => item.id === state.activeId) || null;
+  const entryById = (entryId) => state.history.find((item) => item.id === entryId) || null;
 
   const currentViewText = () => {
     const entry = activeEntry();
@@ -329,8 +336,8 @@
     renderTextWindow();
   };
 
-  const appendOriginalSection = (text) => {
-    const entry = activeEntry();
+  const appendOriginalSection = (text, entryId) => {
+    const entry = entryById(entryId || state.captureEntryId) || activeEntry();
     if (!entry) {
       return;
     }
@@ -394,31 +401,94 @@
     state.analyser = null;
   };
 
-  const stopLive = () => {
-    if (state.mediaRecorder && state.mediaRecorder.state !== "inactive") {
-      state.mediaRecorder.stop();
+  const stopPartialFlushTimer = () => {
+    if (state.partialFlushTimer) {
+      window.clearInterval(state.partialFlushTimer);
+      state.partialFlushTimer = null;
     }
+  };
+
+  const startPartialFlushTimer = () => {
+    stopPartialFlushTimer();
+    state.partialFlushTimer = window.setInterval(() => {
+      if (!state.isRunning || state.audioChunks.length === 0) {
+        return;
+      }
+      flushCurrentSection("interval");
+    }, LIVE_PARTIAL_FLUSH_MS);
+  };
+
+  const updateLiveButtonState = () => {
+    elements.toggleLive.disabled = state.isStopping;
+    if (state.isStopping) {
+      elements.toggleLive.textContent = "Stopping...";
+      return;
+    }
+    elements.toggleLive.textContent = state.isRunning ? "Stop Transcoding Audio" : "Start Transcoding Audio";
+    elements.toggleLive.classList.toggle("btn-danger", state.isRunning);
+    elements.toggleLive.classList.toggle("btn-success", !state.isRunning);
+  };
+
+  const waitForQueueDrain = async () => {
+    const startedAt = Date.now();
+    while (state.isSending || state.chunkQueue.length > 0) {
+      if (Date.now() - startedAt > 180000) {
+        throw new Error("Timed out while waiting for pending transcription chunks.");
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 200));
+    }
+  };
+
+  const stopRecorderAndFinalize = async () => {
+    const recorder = state.mediaRecorder;
+    if (!recorder || recorder.state === "inactive") {
+      return;
+    }
+
+    await new Promise((resolve) => {
+      const finish = () => resolve();
+      recorder.addEventListener("stop", finish, { once: true });
+      try {
+        recorder.stop();
+      } catch (_) {
+        finish();
+      }
+    });
+  };
+
+  const stopLive = async () => {
+    if (state.isStopping) {
+      return;
+    }
+    state.isStopping = true;
+    updateLiveButtonState();
+    setStatus("Stopping and finalizing transcript chunks...");
+
+    stopPartialFlushTimer();
+    await stopRecorderAndFinalize();
+
     if (state.stream) {
       state.stream.getTracks().forEach((track) => track.stop());
       state.stream = null;
     }
     stopMonitor();
+
+    await flushCurrentSection("stop");
+    await waitForQueueDrain();
+
     state.mediaRecorder = null;
     state.audioChunks = [];
+    state.chunkQueue = [];
+    state.captureEntryId = null;
     state.isRunning = false;
-    elements.toggleLive.textContent = "Start Transcoding Audio";
-    elements.toggleLive.classList.remove("btn-danger");
-    elements.toggleLive.classList.add("btn-success");
+    state.isStopping = false;
+    updateLiveButtonState();
     setStatus("Stopped.");
   };
 
-  const sendChunkForTranscription = async (blob) => {
-    if (!blob || blob.size === 0 || state.isSending) {
-      return;
-    }
-
+  const sendChunkForTranscription = async (blob, entryId, sequence) => {
     state.isSending = true;
-    setStatus("Transcribing current section...");
+    setStatus(`Transcribing section ${sequence}...`);
 
     try {
       const form = new FormData();
@@ -437,22 +507,69 @@
       }
 
       const payload = await response.json();
-      appendOriginalSection(payload.text || "");
-      setStatus(`Section transcribed at ${nowLabel()}.`);
+      appendOriginalSection(payload.text || "", entryId);
+      setStatus(`Section ${sequence} transcribed at ${nowLabel()}.`);
     } catch (error) {
-      setStatus(`Transcription failed: ${error.message}`);
+      setStatus(`Section ${sequence} failed: ${error.message}`);
     } finally {
       state.isSending = false;
     }
   };
 
-  const flushCurrentSection = async () => {
+  const processChunkQueue = async () => {
+    if (state.isSending || state.chunkQueue.length === 0) {
+      return;
+    }
+
+    const next = state.chunkQueue.shift();
+    if (!next) {
+      return;
+    }
+
+    await sendChunkForTranscription(next.blob, next.entryId, next.sequence);
+
+    if (state.chunkQueue.length > 0) {
+      await processChunkQueue();
+      return;
+    }
+
+    if (state.isRunning) {
+      setStatus("Listening... partial updates are saved every few seconds.");
+    }
+  };
+
+  const enqueueChunk = async (blob, reason) => {
+    if (!blob || blob.size === 0) {
+      return;
+    }
+
+    const entryId = state.captureEntryId || state.activeId;
+    if (!entryId) {
+      return;
+    }
+
+    state.chunkSequence += 1;
+    state.chunkQueue.push({
+      blob,
+      entryId,
+      reason,
+      sequence: state.chunkSequence
+    });
+
+    if (state.chunkQueue.length > 1 || state.isSending) {
+      setStatus(`Queued section ${state.chunkSequence} (${state.chunkQueue.length} pending)...`);
+    }
+
+    await processChunkQueue();
+  };
+
+  const flushCurrentSection = async (reason = "manual") => {
     if (state.audioChunks.length === 0) {
       return;
     }
     const blob = new Blob(state.audioChunks, { type: state.mediaRecorder?.mimeType || "audio/webm" });
     state.audioChunks = [];
-    await sendChunkForTranscription(blob);
+    await enqueueChunk(blob, reason);
   };
 
   const startSilenceMonitor = (stream) => {
@@ -488,7 +605,7 @@
         return;
       }
 
-      if (!state.isSending && state.audioChunks.length > 0 && Date.now() - state.lastVoiceAt > pauseMs) {
+      if (state.audioChunks.length > 0 && Date.now() - state.lastVoiceAt > pauseMs) {
         await flushCurrentSection();
       }
     }, 300);
@@ -500,6 +617,10 @@
     if (!state.activeId) {
       createHistoryEntry();
     }
+
+    state.captureEntryId = state.activeId;
+    state.chunkQueue = [];
+    state.chunkSequence = 0;
 
     let stream;
     try {
@@ -534,15 +655,17 @@
 
     recorder.onerror = () => {
       setStatus("Recorder error. Stopping.");
-      stopLive();
+      stopLive().catch((error) => {
+        setStatus(`Stop failed: ${error.message}`);
+      });
     };
 
     recorder.start(1000);
     state.isRunning = true;
-    elements.toggleLive.textContent = "Stop Transcoding Audio";
-    elements.toggleLive.classList.remove("btn-success");
-    elements.toggleLive.classList.add("btn-danger");
-    setStatus("Listening... pause to split into next section.");
+    state.isStopping = false;
+    updateLiveButtonState();
+    startPartialFlushTimer();
+    setStatus("Listening... partial updates are saved every few seconds.");
   };
 
   const formatOrSummarize = async (endpoint, mode) => {
@@ -623,9 +746,18 @@
   };
 
   elements.toggleLive.addEventListener("click", async () => {
+    if (state.isStopping) {
+      return;
+    }
+
     if (state.isRunning) {
-      await flushCurrentSection();
-      stopLive();
+      try {
+        await stopLive();
+      } catch (error) {
+        state.isStopping = false;
+        updateLiveButtonState();
+        setStatus(`Stop failed: ${error.message}`);
+      }
       return;
     }
 
@@ -700,7 +832,17 @@
   });
 
   window.addEventListener("beforeunload", () => {
-    stopLive();
+    stopPartialFlushTimer();
+    if (state.mediaRecorder && state.mediaRecorder.state !== "inactive") {
+      try {
+        state.mediaRecorder.stop();
+      } catch (_) {
+        // Ignore recorder stop errors during unload.
+      }
+    }
+    if (state.stream) {
+      state.stream.getTracks().forEach((track) => track.stop());
+    }
   });
 
   loadSettings();
@@ -720,6 +862,8 @@
   if (supportProblem) {
     elements.toggleLive.disabled = true;
     setStatus(supportProblem);
+  } else {
+    updateLiveButtonState();
   }
 
   elements.languageSelect.value = "et";
