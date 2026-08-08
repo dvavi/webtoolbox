@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from webtoolbox.common.file_utils import InvalidFilenameError, validate_filename
 from webtoolbox.config import settings
@@ -49,6 +52,13 @@ transcript_llm_service = TranscriptLLMService(
 MODEL_PROFILES = {"general", "estonian"}
 TRANSCRIBE_LANGUAGES = {"auto", "et", "ru", "en"}
 LLM_PROVIDERS = {"openai", "ollama"}
+LIVE_AUDIO_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm"}
+
+
+class LiveTextActionRequest(BaseModel):
+    text: str
+    llm_provider: str = "openai"
+    llm_model: str = ""
 
 
 
@@ -177,12 +187,54 @@ async def _save_upload_streaming(upload: UploadFile) -> str:
     return filename
 
 
+async def _save_live_chunk(upload: UploadFile) -> Path:
+    suffix = Path(upload.filename or "chunk.webm").suffix.lower()
+    if suffix not in LIVE_AUDIO_SUFFIXES:
+        raise HTTPException(status_code=400, detail="Unsupported live audio format")
+
+    total_size = 0
+    temp_fd, temp_name = tempfile.mkstemp(prefix="webtoolbox-live-", suffix=suffix)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(temp_fd, "wb") as handle:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > settings.max_upload_bytes:
+                    raise HTTPException(status_code=413, detail="Live audio chunk exceeds size limit")
+                handle.write(chunk)
+        return temp_path
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    finally:
+        await upload.close()
+
+
 @router.get("", response_class=HTMLResponse)
 async def transcriber_page(request: Request) -> HTMLResponse:
     context = _list_context()
     return templates.TemplateResponse(
         request=request,
         name="transcriber/index.html",
+        context=context,
+    )
+
+
+@router.get("/live", response_class=HTMLResponse)
+async def live_transcriber_page(request: Request) -> HTMLResponse:
+    context = _list_context()
+    context.update(
+        {
+            "selected_model_profile": "estonian" if settings.estonian_model.strip() else "general",
+            "selected_language": "et",
+        }
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="transcriber/live.html",
         context=context,
     )
 
@@ -347,6 +399,88 @@ async def transcode_audio_bulk(
         jobs.append({"job_id": job_id, "audio_file": safe_name, "transcript_file": transcript_name})
 
     return JSONResponse({"jobs": jobs})
+
+
+@router.post("/live/transcribe-chunk")
+async def live_transcribe_chunk(
+    file: UploadFile = File(...),
+    model_profile: str = Form(default="estonian"),
+    language: str = Form(default="et"),
+) -> JSONResponse:
+    profile, selected_language = _validate_transcription_options(model_profile, language)
+    temp_path = await _save_live_chunk(file)
+
+    try:
+        transcribed_text = await asyncio.to_thread(
+            transcription_service.transcribe_sync,
+            temp_path,
+            profile,
+            selected_language,
+        )
+    except Exception as exc:
+        logger.exception(
+            "live_transcription_failed",
+            extra={
+                "model_profile": profile,
+                "language": selected_language,
+                "error": str(exc),
+            },
+        )
+        raise HTTPException(status_code=500, detail=f"Live transcription failed: {exc}") from exc
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    return JSONResponse(
+        {
+            "text": transcribed_text,
+            "model_profile": profile,
+            "language": selected_language,
+        }
+    )
+
+
+@router.post("/live/format")
+async def live_format_text(payload: LiveTextActionRequest) -> JSONResponse:
+    provider, model = _validate_llm_options(payload.llm_provider, payload.llm_model)
+    try:
+        output_text = await transcript_llm_service.process_text(
+            text=payload.text,
+            mode="format",
+            provider=provider,
+            model=model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception(
+            "live_format_failed",
+            extra={"provider": provider, "model": model, "error": str(exc)},
+        )
+        raise HTTPException(status_code=500, detail=f"Live formatting failed: {exc}") from exc
+
+    return JSONResponse({"text": output_text, "provider": provider, "model": model})
+
+
+@router.post("/live/summarize")
+async def live_summarize_text(payload: LiveTextActionRequest) -> JSONResponse:
+    provider, model = _validate_llm_options(payload.llm_provider, payload.llm_model)
+    try:
+        output_text = await transcript_llm_service.process_text(
+            text=payload.text,
+            mode="summary",
+            provider=provider,
+            model=model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception(
+            "live_summary_failed",
+            extra={"provider": provider, "model": model, "error": str(exc)},
+        )
+        raise HTTPException(status_code=500, detail=f"Live summary failed: {exc}") from exc
+
+    return JSONResponse({"text": output_text, "provider": provider, "model": model})
 
 
 @router.post("/text/delete", response_class=HTMLResponse)

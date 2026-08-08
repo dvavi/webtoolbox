@@ -3,7 +3,8 @@
 Webtoolbox is a modular FastAPI web app that hosts multiple tools.
 
 Current tool:
-- Audio -> Text Transcoder
+- Audio File to Text
+- Live Audio to Text
 
 ## Architecture
 
@@ -22,7 +23,7 @@ The transcriber tool stores files under a single data root:
 ## Features
 
 - Home page listing available tools
-- Tool page with:
+- Audio File to Text page with:
   - Existing audio and transcript file lists
   - Drag and drop upload for audio and text files
   - Audio and transcript delete operations
@@ -36,6 +37,13 @@ The transcriber tool stores files under a single data root:
   - Transcript LLM provider/model selectors (OpenAI or Ollama)
   - Per-job cancellation from the progress panel
   - Live progress updates over WebSocket
+- Live Audio to Text page with:
+  - Browser microphone capture with pause-based section splitting
+  - Language selection (`Auto`, `English`, `Estonian`, `Russian`)
+  - Model selection (`General` or `Estonian` profile)
+  - Microphone settings persisted per device in browser local storage
+  - Local history with original, formatted, and summary versions
+  - Copy current displayed text
 - Transcript output naming rule:
   - `meeting01.wav` -> `meeting01.txt`
   - `meeting01.txt` -> `meeting01_formatted.txt` (or numbered if already exists)

@@ -67,9 +67,14 @@ def create_app() -> FastAPI:
             context={
                 "tools": [
                     {
-                        "name": "Audio -> Text Transcoder",
-                        "description": "Upload audio, transcribe in the background, and manage transcript files.",
+                        "name": "Audio File to Text",
+                        "description": "Upload audio files, transcribe in the background, and manage transcript files.",
                         "url": "/tools/transcriber",
+                    },
+                    {
+                        "name": "Live Audio to Text",
+                        "description": "Speak into a selected microphone for section-based live transcription with formatting and summaries.",
+                        "url": "/tools/transcriber/live",
                     }
                 ]
             },

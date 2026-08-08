@@ -306,6 +306,26 @@ class TranscriptLLMService:
             raise FileNotFoundError(f"Prompt file not found: {path}")
         return path.read_text(encoding="utf-8").strip()
 
+    async def process_text(self, text: str, mode: str, provider: str, model: str) -> str:
+        """Process plain text using the same prompts as file-based actions."""
+        if mode not in self._prompts:
+            raise ValueError(f"Unsupported mode: {mode}")
+
+        source_text = (text or "").strip()
+        if not source_text:
+            raise ValueError("Text is empty")
+
+        prompt = self._prompts[mode]
+        # Live mode does not use cancellable job IDs, so pass a synthetic identifier.
+        return await asyncio.to_thread(
+            self._call_provider_sync,
+            provider,
+            model,
+            prompt,
+            source_text,
+            "live-request",
+        )
+
     async def process_transcript(
         self,
         job_id: str,

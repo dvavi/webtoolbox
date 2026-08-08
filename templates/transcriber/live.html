@@ -1,0 +1,687 @@
+{% extends "base.html" %}
+
+{% block title %}Webtoolbox - Live Audio to Text{% endblock %}
+
+{% block content %}
+<section class="mb-3 d-flex flex-wrap justify-content-between align-items-start gap-3">
+  <div>
+    <h1 class="h3 mb-1">Live Audio to Text</h1>
+    <p class="text-muted mb-0">Speak into your microphone, pause to create a new section, and refine text with formatting and summary actions.</p>
+  </div>
+  <a class="btn btn-outline-secondary" href="/tools/transcriber">Open Audio File to Text</a>
+</section>
+
+<div class="row g-4">
+  <div class="col-12 col-xl-4">
+    <div class="card shadow-sm h-100">
+      <div class="card-body">
+        <div class="d-grid gap-2">
+          <button id="toggle-live" class="btn btn-success" type="button">Start Transcoding Audio</button>
+          <button id="clear-live" class="btn btn-outline-danger" type="button">Clear Current Text</button>
+        </div>
+
+        <hr>
+
+        <div class="d-grid gap-2">
+          <button id="toggle-settings" class="btn btn-outline-primary" type="button">Settings</button>
+          <div id="settings-panel" class="border rounded p-3 d-none">
+            <label for="mic-select" class="form-label mb-1">Microphone</label>
+            <select id="mic-select" class="form-select form-select-sm mb-2">
+              <option value="">Default microphone</option>
+            </select>
+            <button id="save-mic-settings" class="btn btn-sm btn-primary" type="button">Save Microphone</button>
+            <p id="settings-status" class="small text-muted mb-0 mt-2"></p>
+          </div>
+        </div>
+
+        <hr>
+
+        <div class="mb-3">
+          <label for="language-select" class="form-label mb-1">Language</label>
+          <select id="language-select" class="form-select form-select-sm">
+            <option value="auto">Auto</option>
+            <option value="en">English</option>
+            <option value="et" selected>Estonian</option>
+            <option value="ru">Russian</option>
+          </select>
+        </div>
+
+        <div class="mb-3">
+          <label for="model-profile-select" class="form-label mb-1">Model</label>
+          <select id="model-profile-select" class="form-select form-select-sm">
+            <option value="general">General ({{ transcribe_general_model_name }})</option>
+            {% if estonian_model_configured %}
+            <option value="estonian" selected>Estonian ({{ transcribe_estonian_model_name }})</option>
+            {% else %}
+            <option value="estonian" disabled>Estonian model is not configured</option>
+            {% endif %}
+          </select>
+        </div>
+
+        <div class="mb-3">
+          <label for="llm-provider-select" class="form-label mb-1">LLM Provider</label>
+          <select id="llm-provider-select" class="form-select form-select-sm">
+            {% if openai_configured %}
+            <option value="openai" {% if selected_llm_provider == "openai" %}selected{% endif %}>OpenAI</option>
+            {% endif %}
+            <option value="ollama" {% if selected_llm_provider == "ollama" %}selected{% endif %}>Ollama</option>
+          </select>
+        </div>
+
+        <div class="mb-3">
+          <label for="llm-model-select" class="form-label mb-1">LLM Model</label>
+          <select id="llm-model-select" class="form-select form-select-sm" data-openai-models='{{ openai_models | tojson }}' data-ollama-models='{{ ollama_models | tojson }}' data-selected-model='{{ selected_llm_model }}'></select>
+        </div>
+
+        <div class="d-grid gap-2">
+          <button id="format-text" class="btn btn-primary" type="button">Format Text</button>
+          <button id="make-summary" class="btn btn-info text-white" type="button">Make Summary</button>
+          <button id="copy-current" class="btn btn-outline-secondary" type="button">Copy Current Text</button>
+        </div>
+
+        <hr>
+
+        <label for="history-select" class="form-label mb-1">History</label>
+        <select id="history-select" class="form-select form-select-sm mb-2"></select>
+
+        <div class="btn-group w-100" role="group" aria-label="Display version">
+          <button class="btn btn-outline-dark active history-view" data-view="original" type="button">Original</button>
+          <button class="btn btn-outline-dark history-view" data-view="formatted" type="button">Formatted</button>
+          <button class="btn btn-outline-dark history-view" data-view="summary" type="button">Summary</button>
+        </div>
+
+        <p id="live-status" class="small text-muted mt-3 mb-0">Ready.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12 col-xl-8">
+    <div class="card shadow-sm h-100">
+      <div class="card-body d-flex flex-column">
+        <h2 class="h5 mb-3">Transcript Window</h2>
+        <textarea id="live-text" class="form-control live-transcript-window flex-grow-1" placeholder="Live transcript text appears here..."></textarea>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const STORAGE_KEY = "webtoolbox_live_history_v1";
+  const SETTINGS_KEY = "webtoolbox_live_settings_v1";
+
+  const elements = {
+    toggleLive: document.getElementById("toggle-live"),
+    clearLive: document.getElementById("clear-live"),
+    toggleSettings: document.getElementById("toggle-settings"),
+    settingsPanel: document.getElementById("settings-panel"),
+    micSelect: document.getElementById("mic-select"),
+    saveMicSettings: document.getElementById("save-mic-settings"),
+    settingsStatus: document.getElementById("settings-status"),
+    languageSelect: document.getElementById("language-select"),
+    modelProfileSelect: document.getElementById("model-profile-select"),
+    llmProviderSelect: document.getElementById("llm-provider-select"),
+    llmModelSelect: document.getElementById("llm-model-select"),
+    formatText: document.getElementById("format-text"),
+    makeSummary: document.getElementById("make-summary"),
+    copyCurrent: document.getElementById("copy-current"),
+    historySelect: document.getElementById("history-select"),
+    historyViewButtons: Array.from(document.querySelectorAll(".history-view")),
+    liveStatus: document.getElementById("live-status"),
+    liveText: document.getElementById("live-text")
+  };
+
+  const state = {
+    isRunning: false,
+    mediaRecorder: null,
+    audioChunks: [],
+    stream: null,
+    analyser: null,
+    audioContext: null,
+    monitorTimer: null,
+    lastVoiceAt: 0,
+    isSending: false,
+    history: [],
+    activeId: null,
+    view: "original",
+    settings: {
+      micDeviceId: ""
+    }
+  };
+
+  const nowIso = () => new Date().toISOString();
+  const nowLabel = () => new Date().toLocaleTimeString();
+
+  const setStatus = (message) => {
+    elements.liveStatus.textContent = message;
+  };
+
+  const parseJsonArray = (value) => {
+    try {
+      const parsed = JSON.parse(value || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      return [];
+    }
+  };
+
+  const syncLlmModelOptions = () => {
+    const modelSelect = elements.llmModelSelect;
+    const providerSelect = elements.llmProviderSelect;
+    if (!modelSelect || !providerSelect) {
+      return;
+    }
+
+    const openaiModels = parseJsonArray(modelSelect.dataset.openaiModels);
+    const ollamaModels = parseJsonArray(modelSelect.dataset.ollamaModels);
+    const currentProvider = providerSelect.value;
+    const models = currentProvider === "openai" ? openaiModels : ollamaModels;
+    const preferred = modelSelect.value || modelSelect.dataset.selectedModel || "";
+
+    modelSelect.innerHTML = "";
+    models.forEach((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      modelSelect.appendChild(option);
+    });
+
+    if (models.length === 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No models configured";
+      modelSelect.appendChild(option);
+      modelSelect.value = "";
+      modelSelect.disabled = true;
+      return;
+    }
+
+    modelSelect.disabled = false;
+    modelSelect.value = models.includes(preferred) ? preferred : models[0];
+    modelSelect.dataset.selectedModel = modelSelect.value;
+  };
+
+  const loadSettings = () => {
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      if (!raw) {
+        return;
+      }
+      const saved = JSON.parse(raw);
+      if (saved && typeof saved === "object" && typeof saved.micDeviceId === "string") {
+        state.settings.micDeviceId = saved.micDeviceId;
+      }
+    } catch (_) {
+      // Ignore malformed local storage payload.
+    }
+  };
+
+  const saveSettings = () => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+  };
+
+  const loadHistory = () => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        return [];
+      }
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      return [];
+    }
+  };
+
+  const saveHistory = () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.history.slice(0, 50)));
+  };
+
+  const toLabel = (entry) => {
+    const created = new Date(entry.createdAt || nowIso());
+    const stamp = created.toLocaleString();
+    const preview = (entry.original || "").replace(/\s+/g, " ").slice(0, 40);
+    return preview ? `${stamp} - ${preview}` : `${stamp} - empty`;
+  };
+
+  const refreshHistorySelect = () => {
+    const select = elements.historySelect;
+    select.innerHTML = "";
+
+    if (state.history.length === 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No saved transcripts";
+      select.appendChild(option);
+      select.value = "";
+      return;
+    }
+
+    state.history.forEach((entry) => {
+      const option = document.createElement("option");
+      option.value = entry.id;
+      option.textContent = toLabel(entry);
+      select.appendChild(option);
+    });
+
+    if (!state.activeId || !state.history.find((item) => item.id === state.activeId)) {
+      state.activeId = state.history[0].id;
+    }
+    select.value = state.activeId;
+  };
+
+  const activeEntry = () => state.history.find((item) => item.id === state.activeId) || null;
+
+  const currentViewText = () => {
+    const entry = activeEntry();
+    if (!entry) {
+      return "";
+    }
+    if (state.view === "formatted") {
+      return entry.formatted || "";
+    }
+    if (state.view === "summary") {
+      return entry.summary || "";
+    }
+    return entry.original || "";
+  };
+
+  const renderTextWindow = () => {
+    elements.liveText.value = currentViewText();
+    elements.historyViewButtons.forEach((button) => {
+      const selected = button.dataset.view === state.view;
+      button.classList.toggle("active", selected);
+      if (selected) {
+        button.classList.remove("btn-outline-dark");
+        button.classList.add("btn-dark");
+      } else {
+        button.classList.add("btn-outline-dark");
+        button.classList.remove("btn-dark");
+      }
+    });
+  };
+
+  const createHistoryEntry = () => {
+    const entry = {
+      id: crypto.randomUUID(),
+      createdAt: nowIso(),
+      modelProfile: elements.modelProfileSelect.value,
+      language: elements.languageSelect.value,
+      original: "",
+      formatted: "",
+      summary: ""
+    };
+    state.history.unshift(entry);
+    state.activeId = entry.id;
+    saveHistory();
+    refreshHistorySelect();
+    renderTextWindow();
+  };
+
+  const updateActiveEntry = (patch) => {
+    const entry = activeEntry();
+    if (!entry) {
+      return;
+    }
+    Object.assign(entry, patch);
+    saveHistory();
+    refreshHistorySelect();
+    renderTextWindow();
+  };
+
+  const appendOriginalSection = (text) => {
+    const entry = activeEntry();
+    if (!entry) {
+      return;
+    }
+    const clean = (text || "").trim();
+    if (!clean) {
+      return;
+    }
+    const next = entry.original ? `${entry.original}\n\n${clean}` : clean;
+    updateActiveEntry({ original: next });
+  };
+
+  const ensureMediaSupport = () => {
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      throw new Error("This browser does not support live audio recording.");
+    }
+  };
+
+  const getAudioConstraints = () => {
+    if (state.settings.micDeviceId) {
+      return {
+        audio: {
+          deviceId: { exact: state.settings.micDeviceId },
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      };
+    }
+    return {
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    };
+  };
+
+  const stopMonitor = () => {
+    if (state.monitorTimer) {
+      window.clearInterval(state.monitorTimer);
+      state.monitorTimer = null;
+    }
+    if (state.audioContext) {
+      state.audioContext.close().catch(() => {});
+      state.audioContext = null;
+    }
+    state.analyser = null;
+  };
+
+  const stopLive = () => {
+    if (state.mediaRecorder && state.mediaRecorder.state !== "inactive") {
+      state.mediaRecorder.stop();
+    }
+    if (state.stream) {
+      state.stream.getTracks().forEach((track) => track.stop());
+      state.stream = null;
+    }
+    stopMonitor();
+    state.mediaRecorder = null;
+    state.audioChunks = [];
+    state.isRunning = false;
+    elements.toggleLive.textContent = "Start Transcoding Audio";
+    elements.toggleLive.classList.remove("btn-danger");
+    elements.toggleLive.classList.add("btn-success");
+    setStatus("Stopped.");
+  };
+
+  const sendChunkForTranscription = async (blob) => {
+    if (!blob || blob.size === 0 || state.isSending) {
+      return;
+    }
+
+    state.isSending = true;
+    setStatus("Transcribing current section...");
+
+    try {
+      const form = new FormData();
+      const ext = blob.type.includes("ogg") ? "ogg" : "webm";
+      form.append("file", blob, `segment.${ext}`);
+      form.append("model_profile", elements.modelProfileSelect.value);
+      form.append("language", elements.languageSelect.value);
+
+      const response = await fetch("/tools/transcriber/live/transcribe-chunk", {
+        method: "POST",
+        body: form
+      });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || "Failed to transcribe section.");
+      }
+
+      const payload = await response.json();
+      appendOriginalSection(payload.text || "");
+      setStatus(`Section transcribed at ${nowLabel()}.`);
+    } catch (error) {
+      setStatus(`Transcription failed: ${error.message}`);
+    } finally {
+      state.isSending = false;
+    }
+  };
+
+  const flushCurrentSection = async () => {
+    if (state.audioChunks.length === 0) {
+      return;
+    }
+    const blob = new Blob(state.audioChunks, { type: state.mediaRecorder?.mimeType || "audio/webm" });
+    state.audioChunks = [];
+    await sendChunkForTranscription(blob);
+  };
+
+  const startSilenceMonitor = (stream) => {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) {
+      return;
+    }
+
+    state.audioContext = new AudioContextClass();
+    const source = state.audioContext.createMediaStreamSource(stream);
+    state.analyser = state.audioContext.createAnalyser();
+    state.analyser.fftSize = 2048;
+    source.connect(state.analyser);
+
+    const buffer = new Uint8Array(state.analyser.fftSize);
+    const silenceThreshold = 0.015;
+    const pauseMs = 1400;
+    state.lastVoiceAt = Date.now();
+
+    state.monitorTimer = window.setInterval(async () => {
+      if (!state.analyser || !state.isRunning) {
+        return;
+      }
+      state.analyser.getByteTimeDomainData(buffer);
+      let sumSquares = 0;
+      for (let i = 0; i < buffer.length; i += 1) {
+        const normalized = (buffer[i] - 128) / 128;
+        sumSquares += normalized * normalized;
+      }
+      const rms = Math.sqrt(sumSquares / buffer.length);
+      if (rms > silenceThreshold) {
+        state.lastVoiceAt = Date.now();
+        return;
+      }
+
+      if (!state.isSending && state.audioChunks.length > 0 && Date.now() - state.lastVoiceAt > pauseMs) {
+        await flushCurrentSection();
+      }
+    }, 300);
+  };
+
+  const startLive = async () => {
+    ensureMediaSupport();
+
+    if (!state.activeId) {
+      createHistoryEntry();
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia(getAudioConstraints());
+    state.stream = stream;
+    startSilenceMonitor(stream);
+
+    const preferredMime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+
+    const recorder = new MediaRecorder(stream, { mimeType: preferredMime });
+    state.mediaRecorder = recorder;
+    state.audioChunks = [];
+
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        state.audioChunks.push(event.data);
+      }
+    };
+
+    recorder.onerror = () => {
+      setStatus("Recorder error. Stopping.");
+      stopLive();
+    };
+
+    recorder.start(1000);
+    state.isRunning = true;
+    elements.toggleLive.textContent = "Stop Transcoding Audio";
+    elements.toggleLive.classList.remove("btn-success");
+    elements.toggleLive.classList.add("btn-danger");
+    setStatus("Listening... pause to split into next section.");
+  };
+
+  const formatOrSummarize = async (endpoint, mode) => {
+    const entry = activeEntry();
+    if (!entry || !entry.original.trim()) {
+      alert("No original text to process.");
+      return;
+    }
+
+    setStatus(`${mode} is running...`);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: entry.original,
+          llm_provider: elements.llmProviderSelect.value,
+          llm_model: elements.llmModelSelect.value
+        })
+      });
+
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || `${mode} failed`);
+      }
+
+      const payload = await response.json();
+      if (mode === "Formatting") {
+        updateActiveEntry({ formatted: payload.text || "" });
+        state.view = "formatted";
+      } else {
+        updateActiveEntry({ summary: payload.text || "" });
+        state.view = "summary";
+      }
+      renderTextWindow();
+      setStatus(`${mode} completed.`);
+    } catch (error) {
+      setStatus(`${mode} failed: ${error.message}`);
+    }
+  };
+
+  const enumerateMicrophones = async () => {
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const microphones = devices.filter((device) => device.kind === "audioinput");
+
+      elements.micSelect.innerHTML = "";
+      const defaultOption = document.createElement("option");
+      defaultOption.value = "";
+      defaultOption.textContent = "Default microphone";
+      elements.micSelect.appendChild(defaultOption);
+
+      microphones.forEach((mic, index) => {
+        const option = document.createElement("option");
+        option.value = mic.deviceId;
+        option.textContent = mic.label || `Microphone ${index + 1}`;
+        elements.micSelect.appendChild(option);
+      });
+
+      elements.micSelect.value = state.settings.micDeviceId || "";
+      elements.settingsStatus.textContent = "Microphone list updated.";
+    } catch (error) {
+      elements.settingsStatus.textContent = `Cannot access microphones: ${error.message}`;
+    }
+  };
+
+  elements.toggleLive.addEventListener("click", async () => {
+    if (state.isRunning) {
+      await flushCurrentSection();
+      stopLive();
+      return;
+    }
+
+    if (!state.activeId) {
+      createHistoryEntry();
+    }
+
+    try {
+      await startLive();
+    } catch (error) {
+      setStatus(`Cannot start: ${error.message}`);
+    }
+  });
+
+  elements.clearLive.addEventListener("click", () => {
+    if (!state.activeId) {
+      createHistoryEntry();
+      return;
+    }
+    updateActiveEntry({ original: "", formatted: "", summary: "" });
+    state.view = "original";
+    renderTextWindow();
+    setStatus("Current transcript cleared.");
+  });
+
+  elements.toggleSettings.addEventListener("click", async () => {
+    elements.settingsPanel.classList.toggle("d-none");
+    if (!elements.settingsPanel.classList.contains("d-none")) {
+      await enumerateMicrophones();
+    }
+  });
+
+  elements.saveMicSettings.addEventListener("click", () => {
+    state.settings.micDeviceId = elements.micSelect.value;
+    saveSettings();
+    elements.settingsStatus.textContent = "Saved for this device.";
+  });
+
+  elements.formatText.addEventListener("click", async () => {
+    await formatOrSummarize("/tools/transcriber/live/format", "Formatting");
+  });
+
+  elements.makeSummary.addEventListener("click", async () => {
+    await formatOrSummarize("/tools/transcriber/live/summarize", "Summary");
+  });
+
+  elements.copyCurrent.addEventListener("click", async () => {
+    const text = elements.liveText.value;
+    if (!text.trim()) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus("Current text copied.");
+    } catch (_) {
+      setStatus("Copy failed. Browser denied clipboard access.");
+    }
+  });
+
+  elements.llmProviderSelect.addEventListener("change", syncLlmModelOptions);
+
+  elements.historySelect.addEventListener("change", (event) => {
+    state.activeId = event.target.value;
+    renderTextWindow();
+  });
+
+  elements.historyViewButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      state.view = button.dataset.view || "original";
+      renderTextWindow();
+    });
+  });
+
+  window.addEventListener("beforeunload", () => {
+    stopLive();
+  });
+
+  loadSettings();
+  state.history = loadHistory();
+  refreshHistorySelect();
+  if (!state.activeId && state.history.length > 0) {
+    state.activeId = state.history[0].id;
+  }
+  renderTextWindow();
+  syncLlmModelOptions();
+
+  if (!state.activeId) {
+    createHistoryEntry();
+  }
+
+  elements.languageSelect.value = "et";
+  if (elements.modelProfileSelect.querySelector("option[value='estonian']:not([disabled])")) {
+    elements.modelProfileSelect.value = "estonian";
+  }
+})();
+</script>
+{% endblock %}
