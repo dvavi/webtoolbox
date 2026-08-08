@@ -342,9 +342,29 @@
     updateActiveEntry({ original: next });
   };
 
+  const baseAudioConstraints = () => ({
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  });
+
+  const getMediaSupportProblem = () => {
+    if (!window.isSecureContext) {
+      return "Microphone access requires HTTPS (or http://localhost). Open this tool over HTTPS.";
+    }
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+      return "This browser does not expose mediaDevices.getUserMedia().";
+    }
+    if (typeof window.MediaRecorder === "undefined") {
+      return "This browser does not support MediaRecorder for live audio capture.";
+    }
+    return "";
+  };
+
   const ensureMediaSupport = () => {
-    if (!navigator.mediaDevices || !window.MediaRecorder) {
-      throw new Error("This browser does not support live audio recording.");
+    const problem = getMediaSupportProblem();
+    if (problem) {
+      throw new Error(problem);
     }
   };
 
@@ -353,18 +373,12 @@
       return {
         audio: {
           deviceId: { exact: state.settings.micDeviceId },
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
+          ...baseAudioConstraints()
         }
       };
     }
     return {
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
+      audio: baseAudioConstraints()
     };
   };
 
@@ -487,7 +501,20 @@
       createHistoryEntry();
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia(getAudioConstraints());
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(getAudioConstraints());
+    } catch (error) {
+      if (state.settings.micDeviceId) {
+        state.settings.micDeviceId = "";
+        saveSettings();
+        setStatus("Saved microphone is unavailable. Falling back to default microphone.");
+        stream = await navigator.mediaDevices.getUserMedia({ audio: baseAudioConstraints() });
+      } else {
+        throw error;
+      }
+    }
+
     state.stream = stream;
     startSilenceMonitor(stream);
 
@@ -559,6 +586,17 @@
   };
 
   const enumerateMicrophones = async () => {
+    const problem = getMediaSupportProblem();
+    if (problem) {
+      elements.settingsStatus.textContent = problem;
+      elements.micSelect.innerHTML = "";
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "Default microphone";
+      elements.micSelect.appendChild(option);
+      return;
+    }
+
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true });
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -676,6 +714,12 @@
 
   if (!state.activeId) {
     createHistoryEntry();
+  }
+
+  const supportProblem = getMediaSupportProblem();
+  if (supportProblem) {
+    elements.toggleLive.disabled = true;
+    setStatus(supportProblem);
   }
 
   elements.languageSelect.value = "et";
